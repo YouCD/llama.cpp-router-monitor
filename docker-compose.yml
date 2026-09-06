@@ -6,7 +6,6 @@ services:
       - "9091:9091"
     environment:
       - LISTEN_ADDR=:9091
-      - DEFAULT_BACKEND_URL=${DEFAULT_BACKEND_URL:-http://host.docker.internal:8080}
       - ALLOW_DYNAMIC_BACKEND=${ALLOW_DYNAMIC_BACKEND:-true}
       - RETENTION_DAYS=${RETENTION_DAYS:-14}
       - MAX_REQUEST_BYTES=${MAX_REQUEST_BYTES:-33554432}
@@ -14,9 +13,30 @@ services:
       - REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-600}
       - POLL_BACKEND_METRICS=${POLL_BACKEND_METRICS:-true}
       - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
+      - CONFIG_PATH=${CONFIG_PATH:-/app/config.yaml}
       - DATA_DIR=/app/data
+      # 使用 PostgreSQL 时设置：
+      # - DATABASE_TYPE=postgresql
+      # - DATABASE_DSN=postgres://user:password@postgres:5432/monitor?sslmode=disable
     volumes:
       - ./data:/app/data
+      # 挂载 YAML 配置文件（配置后端负载均衡等）
+      - ./config.yaml:/app/config.yaml
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  # 可选：PostgreSQL 数据库服务
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: llama-cpp-router-monitor-pg
+  #   environment:
+  #     - POSTGRES_USER=monitor
+  #     - POSTGRES_PASSWORD=monitor
+  #     - POSTGRES_DB=monitor
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   restart: unless-stopped
+
+# volumes:
+#   pgdata:

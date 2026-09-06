@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -108,9 +106,8 @@ func TestHandleProxyNonStreamingLlamaCppJSON(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	svc, db, cleanup := newTestServer(t, backend.URL)
+	svc, _, cleanup := newTestServer(t, backend.URL)
 	defer cleanup()
-	defer db.Close()
 
 	proxy := httptest.NewServer(svc)
 	defer proxy.Close()
@@ -178,9 +175,8 @@ func TestHandleProxyStreamingLifecycle(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	svc, db, cleanup := newTestServer(t, backend.URL)
+	svc, _, cleanup := newTestServer(t, backend.URL)
 	defer cleanup()
-	defer db.Close()
 
 	proxy := httptest.NewServer(svc)
 	defer proxy.Close()
@@ -277,9 +273,8 @@ func TestHandleProxyStreamingLifecycle(t *testing.T) {
 }
 
 func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	reqRaw, err := svc.saveRawPayload("req1", "request", []byte(`{"a":1}`))
 	if err != nil {
@@ -325,9 +320,8 @@ func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
 }
 
 func TestHandleRawReturnsSavedPayload(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	reqRaw, err := svc.saveRawPayload("req2", "request", []byte(`{"hello":"world"}`))
 	if err != nil {
@@ -354,9 +348,8 @@ func TestHandleRawReturnsSavedPayload(t *testing.T) {
 }
 
 func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	records := []RequestRecord{
@@ -461,9 +454,8 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 }
 
 func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	for _, rec := range []RequestRecord{
@@ -499,9 +491,8 @@ func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
 }
 
 func TestGetRequestsWithTokensFilter(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	for _, rec := range []RequestRecord{
@@ -542,9 +533,8 @@ func TestGetRequestsWithTokensFilter(t *testing.T) {
 }
 
 func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	for _, rec := range []RequestRecord{
@@ -591,9 +581,8 @@ func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
 }
 
 func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	for _, rec := range []RequestRecord{
@@ -648,9 +637,8 @@ func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
 }
 
 func TestCacheFieldsPersistThroughDB(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	if err := seedRequest(t, svc, RequestRecord{
@@ -681,9 +669,8 @@ func TestCacheFieldsPersistThroughDB(t *testing.T) {
 }
 
 func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	body := []byte(strings.Join([]string{
 		`data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"hi"}}]}`,
@@ -708,7 +695,7 @@ func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
 		t.Fatalf("insert request: %v", err)
 	}
 
-	if err := repairStuckRequests(db, svc.cfg.DataDir); err != nil {
+	if err := repairStuckRequests(svc.db, svc.cfg.DataDir); err != nil {
 		t.Fatalf("repair stuck requests: %v", err)
 	}
 
@@ -737,9 +724,8 @@ func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
 }
 
 func TestGetStatsRespectsFilters(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	now := time.Now().UTC()
 	for _, rec := range []RequestRecord{
@@ -794,9 +780,8 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 }
 
 func TestCleanupDisabledWhenRetentionNonPositive(t *testing.T) {
-	svc, db, cleanup := newTestServer(t, "http://example.invalid")
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
-	defer db.Close()
 
 	svc.cfg.RetentionDays = 0
 	if err := seedRequest(t, svc, RequestRecord{
@@ -816,26 +801,33 @@ func TestCleanupDisabledWhenRetentionNonPositive(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T, backendURL string) (*Server, *sql.DB, func()) {
+func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) {
 	t.Helper()
 
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "monitor.db")
-	db, err := sql.Open("sqlite", dbPath)
+	sqlCfg := DatabaseConfig{
+		Type: "sqlite",
+		SQLite: SQLiteConfig{
+			Path: "monitor.db",
+		},
+	}
+	db, err := NewDatabase(sqlCfg, dataDir)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := initDB(db); err != nil {
+	if err := InitDB(db, "sqlite"); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
 	if err := normalizeDB(db); err != nil {
 		t.Fatalf("normalize db: %v", err)
 	}
 
+	backends := []BackendConfig{
+		{Name: "test-backend", URL: backendURL, Weight: 1, Enabled: true},
+	}
 	svc := &Server{
 		cfg: Config{
 			ListenAddr:          ":0",
-			DefaultBackend:      backendURL,
 			AllowDynamicBackend: true,
 			DataDir:             dataDir,
 			RetentionDays:       14,
@@ -843,17 +835,14 @@ func newTestServer(t *testing.T, backendURL string) (*Server, *sql.DB, func()) {
 			MaxCaptureBytes:     2 << 20,
 			RequestTimeout:      15 * time.Second,
 		},
-		db:     db,
-		client: &http.Client{Timeout: 15 * time.Second},
-		hub:    NewEventHub(),
+		db:       db,
+		balancer: NewBackendBalancer(backends, "wrr"),
+		client:   &http.Client{Timeout: 15 * time.Second},
+		hub:      NewEventHub(),
 	}
 
 	cleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = os.Remove(filepath.Join(dataDir, "monitor.db-shm"))
-		_ = os.Remove(filepath.Join(dataDir, "monitor.db-wal"))
-		_ = db.PingContext(ctx)
+		db.Close()
 	}
 	return svc, db, cleanup
 }
@@ -877,4 +866,127 @@ func seedRequest(t *testing.T, svc *Server, rec RequestRecord) error {
 		return err
 	}
 	return svc.finishRequest(rec.ID, rec)
+}
+
+func TestGetBackendsDistinct(t *testing.T) {
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{ID: "b1-a", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK},
+		{ID: "b1-b", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK},
+		{ID: "b2", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-2:8080", StatusCode: http.StatusOK},
+		{ID: "empty", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "", StatusCode: http.StatusOK},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	backends, err := svc.getBackends()
+	if err != nil {
+		t.Fatalf("getBackends: %v", err)
+	}
+	if len(backends) != 2 {
+		t.Fatalf("expected 2 distinct backends, got %v", backends)
+	}
+	for _, b := range backends {
+		if b == "" {
+			t.Fatal("empty backend_url should be excluded")
+		}
+	}
+}
+
+func TestGetStatsByBackend(t *testing.T) {
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{ID: "s1", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions",
+			BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK,
+			PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, FirstByteMs: 10, TotalMs: 100, IsStreaming: true},
+		{ID: "s2", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions",
+			BackendURL: "http://gpu-1:8080", StatusCode: http.StatusBadGateway,
+			ErrorText: "boom", PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, FirstByteMs: 20, TotalMs: 200, IsStreaming: false},
+		{ID: "s3", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions",
+			BackendURL: "http://gpu-2:8080", StatusCode: http.StatusOK,
+			PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10, FirstByteMs: 30, TotalMs: 300, IsStreaming: true},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	items, err := svc.getStatsByBackend(24)
+	if err != nil {
+		t.Fatalf("getStatsByBackend: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 backend groups, got %d: %v", len(items), items)
+	}
+
+	var gpu1, gpu2 map[string]any
+	for _, it := range items {
+		switch it["backend_url"] {
+		case "http://gpu-1:8080":
+			gpu1 = it
+		case "http://gpu-2:8080":
+			gpu2 = it
+		}
+	}
+	if gpu1 == nil || gpu2 == nil {
+		t.Fatalf("missing group: %v", items)
+	}
+
+	if gpu1["requests"].(int64) != 2 {
+		t.Fatalf("gpu1 requests=%v", gpu1["requests"])
+	}
+	if gpu1["errors_count"].(int64) != 1 {
+		t.Fatalf("gpu1 errors=%v", gpu1["errors_count"])
+	}
+	if gpu1["total_tokens"].(int64) != 165 {
+		t.Fatalf("gpu1 total_tokens=%v", gpu1["total_tokens"])
+	}
+	if gpu1["streaming_requests"].(int64) != 1 {
+		t.Fatalf("gpu1 streaming=%v", gpu1["streaming_requests"])
+	}
+
+	if gpu2["requests"].(int64) != 1 {
+		t.Fatalf("gpu2 requests=%v", gpu2["requests"])
+	}
+	if gpu2["errors_count"].(int64) != 0 {
+		t.Fatalf("gpu2 errors=%v", gpu2["errors_count"])
+	}
+	if gpu2["total_tokens"].(int64) != 10 {
+		t.Fatalf("gpu2 total_tokens=%v", gpu2["total_tokens"])
+	}
+}
+
+func TestGetRequestsBackendFilter(t *testing.T) {
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+
+	now := time.Now().UTC()
+	for _, rec := range []RequestRecord{
+		{ID: "f1", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK},
+		{ID: "f2", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-2:8080", StatusCode: http.StatusOK},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	f := RequestFilter{Backend: "http://gpu-1:8080"}
+	recs, err := svc.getRequests(100, 0, f)
+	if err != nil {
+		t.Fatalf("getRequests: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 request for gpu-1, got %d", len(recs))
+	}
+	if recs[0].BackendURL != "http://gpu-1:8080" {
+		t.Fatalf("backend=%q", recs[0].BackendURL)
+	}
 }

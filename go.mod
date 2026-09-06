@@ -2,7 +2,12 @@ module llama-cpp-router-monitor
 
 go 1.24.0
 
-require modernc.org/sqlite v1.39.1
+require (
+	github.com/fufuok/balancer v1.0.0
+	github.com/lib/pq v1.12.3
+	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.39.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

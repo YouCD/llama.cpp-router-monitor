@@ -6,10 +6,335 @@ const state = {
   refreshTimer: null,
   autoRefresh: true,
   latestItems: [],
+  backendStats: [],
   metricsMode: "cards",
   hasMore: false,
   loadingMore: false,
 };
+
+const LANG_KEY = "llama-cpp-router-monitor.lang";
+
+const I18N = {
+  en: {
+    "eyebrow": "llama.cpp observability",
+    "app-title": "llama.cpp Router Monitor",
+    "meta-desc": "Monitor and inspect all traffic going through your local llama.cpp server.",
+    "hero-text": "A lightweight monitoring dashboard for local llama.cpp traffic.",
+    "cards": "Cards",
+    "strip": "Strip",
+    "connecting": "Connecting",
+    "last-update": "Last update",
+    "refresh": "Refresh",
+    "auto-refresh": "Auto refresh",
+    "metric.active-connections": "Active connections",
+    "metric-foot.in-flight": "In flight",
+    "metric.requests-hour": "Requests / hour",
+    "metric-foot.rolling-1h": "Rolling 1h",
+    "metric.total-requests": "Total requests",
+    "metric-foot.retained-window": "Retained window",
+    "metric.output-sec": "Output / second",
+    "metric-foot.shown-rows": "Shown rows",
+    "metric.total-tokens": "Total tokens",
+    "metric.avg-ttft": "Average TTFT",
+    "metric-foot.first-token": "First token",
+    "metric.error-rate": "Error rate",
+    "metric-foot.4xx-5xx": "4xx / 5xx",
+    "panel-kicker.filter-requests": "Filter requests",
+    "filters": "Filters",
+    "collapse": "Collapse",
+    "expand": "Expand",
+    "apply": "Apply",
+    "reset": "Reset",
+    "filter.search": "Search",
+    "filter.search-placeholder": "id, path, model, ip, error",
+    "filter.path": "Path",
+    "filter.path-placeholder": "/v1/chat/completions",
+    "filter.model": "Model",
+    "filter.model-placeholder": "Select or search a recorded model",
+    "filter.backend": "Backend",
+    "filter.method": "Method",
+    "filter.status": "Status",
+    "filter.since": "Since, hours",
+    "filter.stream": "Stream",
+    "any": "Any",
+    "streaming": "Streaming",
+    "non-streaming": "Non-streaming",
+    "filter.errors-only": "Only failures",
+    "filter.with-tokens": "With tokens",
+    "filter.chat-only": "Chat completions only",
+    "panel-kicker.live-stream": "Live request stream",
+    "panel-kicker.by-backend": "Per backend",
+    "by-backend": "By Backend",
+    "request-tape": "Request Tape",
+    "rows": "rows",
+    "total-match": "total match",
+    "select-row-detail": "Select row for detail",
+    "table.time": "Time",
+    "table.request": "Request",
+    "table.status": "Status",
+    "table.model": "Model",
+    "table.ttft": "TTFT",
+    "table.total": "Total",
+    "table.prompt": "Prompt",
+    "table.completion": "Completion",
+    "table.total-tok": "Total tok",
+    "table.cache": "Cache",
+    "table.prompt-s": "Prompt/s",
+    "load-more": "Load {n} more",
+    "loading": "Loading...",
+    "empty.title": "No requests match the current filter",
+    "empty.desc": "Reset filters or wait for new traffic to arrive through the proxy.",
+    "panel-kicker.request-inspector": "Request inspector",
+    "no-selection": "No selection",
+    "close": "Close",
+    "detail-model": "Model",
+    "choose-row": "Choose a row to inspect request metadata and raw payloads.",
+    "mini.status": "Status",
+    "mini.ttft": "TTFT",
+    "mini.total": "Total",
+    "mini.prompt-s": "Prompt/s",
+    "mini.output-s": "Output/s",
+    "mini.prompt-tok": "Prompt tok",
+    "mini.cached-tok": "Cached tok",
+    "mini.cache-hit": "Cache hit",
+    "mini.output-tok": "Output tok",
+    "mini.total-tok": "Total tok",
+    "mini.request": "Request",
+    "mini.response": "Response",
+    "detail.request-id": "Request ID",
+    "detail.backend": "Backend",
+    "detail.client": "Client",
+    "detail.date-time": "Date / Time",
+    "detail.path": "Path",
+    "detail.query": "Query",
+    "detail.error": "Error",
+    "tab.raw-request": "Raw request",
+    "tab.structured-response": "Structured response",
+    "tab.raw-response": "Raw response",
+    "no-request-selected": "No request selected.",
+    "delete-request": "Delete Request",
+    "live-connected": "Live stream connected",
+    "live-reconnect": "Reconnecting to event stream",
+    "live-refresh-failed": "Refresh failed: {msg}",
+    "live-load-more-failed": "Load more failed: {msg}",
+    "live-delete-failed": "Delete failed: {msg}",
+    "live-boot-failed": "Boot failed: {msg}",
+    "filter.no-active": "No active filters",
+    "filter-tag.search": "search",
+    "filter-tag.path": "path",
+    "filter-tag.model": "model",
+    "filter-tag.method": "method",
+    "filter-tag.status": "status",
+    "filter-tag.since": "since",
+    "filter-tag.stream": "stream",
+    "filter-tag.errors": "errors",
+    "filter-tag.tokens": "tokens",
+    "filter-tag.chat": "chat",
+    "filter-tag.backend": "backend",
+    "no-backend-data": "No backend data yet. Send traffic through the proxy to see per-backend stats.",
+    "no-query-string": "No query string",
+    "unknown-client": "unknown client",
+    "row.in-progress": "in progress",
+    "row.streaming": "streaming",
+    "row.standard": "standard",
+    "first-token": "first token",
+    "running": "running",
+    "chunks": "{n} chunks",
+    "cached": "{n} cached",
+    "no-cache": "no cache",
+    "prompt": "prompt {n}",
+    "live": "LIVE",
+    "standard": "Standard",
+    "payload-unavailable": "response payload unavailable",
+    "loading-request-payload": "Loading request payload...",
+    "building-structured-response": "Building structured response...",
+    "loading-response-payload": "Loading response payload...",
+    "select-a-request": "Select a request",
+    "confirm-delete": "Delete request {id}? This will remove the DB row and raw payloads.",
+  },
+  zh: {
+    "eyebrow": "llama.cpp 可观测性",
+    "app-title": "llama.cpp 路由器监控",
+    "meta-desc": "监控并检查流经本地 llama.cpp 服务器的所有流量。",
+    "hero-text": "本地 llama.cpp 流量的轻量级监控面板。",
+    "cards": "卡片",
+    "strip": "条形",
+    "connecting": "连接中",
+    "last-update": "最后更新",
+    "refresh": "刷新",
+    "auto-refresh": "自动刷新",
+    "metric.active-connections": "活跃连接",
+    "metric-foot.in-flight": "进行中",
+    "metric.requests-hour": "每小时请求",
+    "metric-foot.rolling-1h": "滚动 1 小时",
+    "metric.total-requests": "总请求数",
+    "metric-foot.retained-window": "保留窗口",
+    "metric.output-sec": "每秒输出",
+    "metric-foot.shown-rows": "当前显示行",
+    "metric.total-tokens": "总 Token 数",
+    "metric.avg-ttft": "平均 TTFT",
+    "metric-foot.first-token": "首个 token",
+    "metric.error-rate": "错误率",
+    "metric-foot.4xx-5xx": "4xx / 5xx",
+    "panel-kicker.filter-requests": "筛选请求",
+    "filters": "筛选",
+    "collapse": "收起",
+    "expand": "展开",
+    "apply": "应用",
+    "reset": "重置",
+    "filter.search": "搜索",
+    "filter.search-placeholder": "id、路径、模型、IP、错误",
+    "filter.path": "路径",
+    "filter.path-placeholder": "/v1/chat/completions",
+    "filter.model": "模型",
+    "filter.model-placeholder": "选择或搜索已记录的模型",
+    "filter.backend": "后端",
+    "filter.method": "方法",
+    "filter.status": "状态",
+    "filter.since": "自起小时数",
+    "filter.stream": "流式",
+    "any": "全部",
+    "streaming": "流式",
+    "non-streaming": "非流式",
+    "filter.errors-only": "仅失败",
+    "filter.with-tokens": "有 Token",
+    "filter.chat-only": "仅对话补全",
+    "panel-kicker.live-stream": "实时请求流",
+    "panel-kicker.by-backend": "按后端",
+    "by-backend": "按后端统计",
+    "request-tape": "请求列表",
+    "rows": "行",
+    "total-match": "条匹配",
+    "select-row-detail": "选择行查看详情",
+    "table.time": "时间",
+    "table.request": "请求",
+    "table.status": "状态",
+    "table.model": "模型",
+    "table.ttft": "TTFT",
+    "table.total": "总计",
+    "table.prompt": "提示",
+    "table.completion": "补全",
+    "table.total-tok": "总 Token",
+    "table.cache": "缓存",
+    "table.prompt-s": "提示/秒",
+    "load-more": "再加载 {n} 条",
+    "loading": "加载中...",
+    "empty.title": "没有符合当前筛选条件的请求",
+    "empty.desc": "重置筛选，或等待新的流量经过代理。",
+    "panel-kicker.request-inspector": "请求检查器",
+    "no-selection": "未选择",
+    "close": "关闭",
+    "detail-model": "模型",
+    "choose-row": "选择一行以查看请求元数据和原始载荷。",
+    "mini.status": "状态",
+    "mini.ttft": "TTFT",
+    "mini.total": "总计",
+    "mini.prompt-s": "提示/秒",
+    "mini.output-s": "输出/秒",
+    "mini.prompt-tok": "提示 Token",
+    "mini.cached-tok": "缓存 Token",
+    "mini.cache-hit": "缓存命中",
+    "mini.output-tok": "输出 Token",
+    "mini.total-tok": "总 Token",
+    "mini.request": "请求",
+    "mini.response": "响应",
+    "detail.request-id": "请求 ID",
+    "detail.backend": "后端",
+    "detail.client": "客户端",
+    "detail.date-time": "日期/时间",
+    "detail.path": "路径",
+    "detail.query": "查询参数",
+    "detail.error": "错误",
+    "tab.raw-request": "原始请求",
+    "tab.structured-response": "结构化响应",
+    "tab.raw-response": "原始响应",
+    "no-request-selected": "未选择请求。",
+    "delete-request": "删除请求",
+    "live-connected": "实时流已连接",
+    "live-reconnect": "正在重新连接事件流",
+    "live-refresh-failed": "刷新失败：{msg}",
+    "live-load-more-failed": "加载更多失败：{msg}",
+    "live-delete-failed": "删除失败：{msg}",
+    "live-boot-failed": "启动失败：{msg}",
+    "filter.no-active": "无活动筛选",
+    "filter-tag.search": "搜索",
+    "filter-tag.path": "路径",
+    "filter-tag.model": "模型",
+    "filter-tag.method": "方法",
+    "filter-tag.status": "状态",
+    "filter-tag.since": "自起",
+    "filter-tag.stream": "流式",
+    "filter-tag.errors": "错误",
+    "filter-tag.tokens": "Token",
+    "filter-tag.chat": "对话",
+    "filter-tag.backend": "后端",
+    "no-backend-data": "暂无后端数据。让流量经过代理后即可查看按后端的统计。",
+    "no-query-string": "无查询字符串",
+    "unknown-client": "未知客户端",
+    "row.in-progress": "进行中",
+    "row.streaming": "流式",
+    "row.standard": "标准",
+    "first-token": "首个 token",
+    "running": "运行中",
+    "chunks": "{n} 个块",
+    "cached": "{n} 已缓存",
+    "no-cache": "无缓存",
+    "prompt": "提示 {n}",
+    "live": "实时",
+    "standard": "标准",
+    "payload-unavailable": "响应载荷不可用",
+    "loading-request-payload": "正在加载请求载荷...",
+    "building-structured-response": "正在构建结构化响应...",
+    "loading-response-payload": "正在加载响应载荷...",
+    "select-a-request": "选择一条请求",
+    "confirm-delete": "删除请求 {id}？这将移除数据库记录和原始载荷。",
+  },
+};
+
+let currentLang = localStorage.getItem(LANG_KEY) || "en";
+
+function t(key, params = {}) {
+  let str = I18N[currentLang]?.[key] ?? I18N.en[key] ?? key;
+  for (const [k, v] of Object.entries(params)) {
+    str = str.replaceAll(`{${k}}`, String(v));
+  }
+  return str;
+}
+
+function applyLanguage() {
+  currentLang = localStorage.getItem(LANG_KEY) || "en";
+  document.documentElement.lang = currentLang === "zh" ? "zh-CN" : "en";
+
+  document.querySelectorAll("[data-i18n]").forEach((node) => {
+    node.textContent = t(node.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.placeholder = t(node.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    node.title = t(node.dataset.i18nTitle);
+  });
+  document.querySelectorAll("[data-i18n-content]").forEach((node) => {
+    node.content = t(node.dataset.i18nContent);
+  });
+
+  const btnLang = document.getElementById("btnLang");
+  if (btnLang) {
+    btnLang.textContent = currentLang === "zh" ? "EN" : "中文";
+    btnLang.setAttribute("aria-label", currentLang === "zh" ? "Switch to English" : "切换到中文");
+  }
+
+  renderFilterTags();
+  syncLoadMoreState();
+  renderRequests(state.latestItems);
+  renderBackendStats(state.backendStats);
+}
+
+function toggleLanguage() {
+  currentLang = currentLang === "zh" ? "en" : "zh";
+  localStorage.setItem(LANG_KEY, currentLang);
+  applyLanguage();
+}
 
 const el = {
   active: document.getElementById("activeConnections"),
@@ -71,7 +396,9 @@ const el = {
   fQuery: document.getElementById("fQuery"),
   fPath: document.getElementById("fPath"),
   fModel: document.getElementById("fModel"),
+  fBackend: document.getElementById("fBackend"),
   modelOptions: document.getElementById("modelOptions"),
+  backendStats: document.getElementById("backendStats"),
   fMethod: document.getElementById("fMethod"),
   fStatus: document.getElementById("fStatus"),
   fSince: document.getElementById("fSince"),
@@ -204,7 +531,7 @@ function isCompleted(item) {
 }
 
 function statusText(item) {
-  return isCompleted(item) ? String(item.status_code || 0) : "LIVE";
+  return isCompleted(item) ? String(item.status_code || 0) : t("live");
 }
 
 function detailStatusClass(item) {
@@ -255,7 +582,7 @@ function numericCell(primary, secondary = "") {
 
 function buildStructuredResponseView(raw, rec) {
   if (!raw || /^response payload unavailable/i.test(raw)) {
-    return raw || "response payload unavailable";
+    return raw || t("payload-unavailable");
   }
 
   if (!rec?.is_streaming) {
@@ -331,6 +658,7 @@ function collectFilters() {
   if (el.fQuery.value.trim()) filters.q = el.fQuery.value.trim();
   if (el.fPath.value.trim()) filters.path = el.fPath.value.trim();
   if (el.fModel.value.trim()) filters.model = el.fModel.value.trim();
+  if (el.fBackend.value) filters.backend = el.fBackend.value;
   if (el.fMethod.value) filters.method = el.fMethod.value;
   if (el.fStatus.value.trim()) filters.status = el.fStatus.value.trim();
   if (el.fSince.value.trim()) filters.since_hours = el.fSince.value.trim();
@@ -347,6 +675,7 @@ function resetFilters() {
   el.fQuery.value = "";
   el.fPath.value = "";
   el.fModel.value = "";
+  el.fBackend.value = "";
   el.fMethod.value = "";
   el.fStatus.value = "";
   el.fSince.value = "";
@@ -360,7 +689,7 @@ function resetFilters() {
 
 function setFiltersCollapsed(collapsed) {
   el.filterBody.hidden = collapsed;
-  el.btnToggleFilters.textContent = collapsed ? "Expand" : "Collapse";
+  el.btnToggleFilters.textContent = collapsed ? t("expand") : t("collapse");
   el.btnToggleFilters.setAttribute("aria-expanded", String(!collapsed));
   localStorage.setItem(FILTERS_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
@@ -379,22 +708,23 @@ function renderFilterTags() {
   if (!entries.length) {
     const span = document.createElement("span");
     span.className = "filter-tag";
-    span.textContent = "No active filters";
+    span.textContent = t("filter.no-active");
     el.activeFilters.appendChild(span);
     return;
   }
 
   const labels = {
-    q: "search",
-    path: "path",
-    model: "model",
-    method: "method",
-    status: "status",
-    since_hours: "since",
-    stream: "stream",
-    errors_only: "errors",
-    with_tokens: "tokens",
-    chat_completions_only: "chat",
+    q: "filter-tag.search",
+    path: "filter-tag.path",
+    model: "filter-tag.model",
+    method: "filter-tag.method",
+    backend: "filter-tag.backend",
+    status: "filter-tag.status",
+    since_hours: "filter-tag.since",
+    stream: "filter-tag.stream",
+    errors_only: "filter-tag.errors",
+    with_tokens: "filter-tag.tokens",
+    chat_completions_only: "filter-tag.chat",
   };
   entries.forEach(([key, value]) => {
     const tag = document.createElement("span");
@@ -402,7 +732,7 @@ function renderFilterTags() {
     if (key === "chat_completions_only") {
       tag.textContent = "POST /v1/chat/completions";
     } else {
-      tag.textContent = `${labels[key] || key}: ${value}`;
+      tag.textContent = `${t(labels[key] || key)}: ${value}`;
     }
     el.activeFilters.appendChild(tag);
   });
@@ -459,6 +789,77 @@ async function loadModelOptions() {
   }
 }
 
+async function loadBackends() {
+  const data = await fetchJSON("/_monitor/backends");
+  const items = Array.isArray(data.items) ? data.items : [];
+  const current = el.fBackend.value;
+  el.fBackend.innerHTML = "";
+  const anyOption = document.createElement("option");
+  anyOption.value = "";
+  anyOption.textContent = t("any");
+  el.fBackend.appendChild(anyOption);
+  for (const backend of items) {
+    const option = document.createElement("option");
+    option.value = backend;
+    option.textContent = backend;
+    el.fBackend.appendChild(option);
+  }
+  if (current && items.includes(current)) {
+    el.fBackend.value = current;
+  }
+}
+
+async function loadBackendStats() {
+  const hours = Number.parseInt(state.filters.since_hours || "1", 10) || 1;
+  const data = await fetchJSON(`/_monitor/stats-by-backend?${queryString({ hours })}`);
+  const items = Array.isArray(data.items) ? data.items : [];
+  state.backendStats = items;
+  renderBackendStats(items);
+}
+
+function shortenBackendUrl(url) {
+  return String(url || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+function renderBackendStats(items) {
+  if (!el.backendStats) {
+    return;
+  }
+  el.backendStats.innerHTML = "";
+  if (!items.length) {
+    const div = document.createElement("div");
+    div.className = "backend-empty";
+    div.textContent = t("no-backend-data");
+    el.backendStats.appendChild(div);
+    return;
+  }
+  for (const b of items) {
+    const card = document.createElement("article");
+    card.className = "backend-card";
+    const url = b.backend_url || "-";
+    const errRate = b.error_rate || 0;
+    const errCls = errRate >= 0.5 ? "tone-critical" : errRate > 0 ? "tone-hot" : "tone-good";
+    card.title = url;
+    card.innerHTML = `
+      <div class="backend-card-head">
+        <span class="backend-name">${escapeHTML(shortenBackendUrl(url))}</span>
+        <span class="backend-err ${errCls}">${fmtPercent(errRate)}</span>
+      </div>
+      <div class="backend-metrics">
+        <div class="backend-metric"><span>${t("mini.request")}</span><strong>${fmtNum(b.requests || 0)}</strong></div>
+        <div class="backend-metric"><span>${t("mini.total-tok")}</span><strong>${fmtNum(b.total_tokens || 0)}</strong></div>
+        <div class="backend-metric"><span>${t("table.ttft")}</span><strong>${fmtMs(b.avg_first_byte_ms || 0)}</strong></div>
+        <div class="backend-metric"><span>${t("mini.total")}</span><strong>${fmtMs(b.avg_total_ms || 0)}</strong></div>
+      </div>`;
+    card.addEventListener("click", () => {
+      el.fBackend.value = url;
+      collectFilters();
+      loadRequests().catch(() => {});
+    });
+    el.backendStats.appendChild(card);
+  }
+}
+
 async function loadRequests() {
   state.loadingMore = false;
   const params = {
@@ -501,7 +902,7 @@ function syncLoadMoreState() {
   const show = state.latestItems.length > 0 && (state.hasMore || state.loadingMore);
   el.loadMoreShell.hidden = !show;
   el.loadMoreBtn.disabled = state.loadingMore;
-  el.loadMoreBtn.textContent = state.loadingMore ? "Loading..." : `Load ${state.pageSize} more`;
+  el.loadMoreBtn.textContent = state.loadingMore ? t("loading") : t("load-more", { n: state.pageSize });
 }
 
 function renderRequests(items) {
@@ -519,7 +920,7 @@ function renderRequests(items) {
     if (!completed) {
       row.classList.add("is-live");
       row.setAttribute("aria-disabled", "true");
-      row.title = "Request is still in progress";
+      row.title = currentLang === "zh" ? "请求仍在进行中" : "Request is still in progress";
     }
 
     const requestCell = `
@@ -528,24 +929,24 @@ function renderRequests(items) {
           <span class="method-badge">${escapeHTML(item.method || "-")}</span>
           <span class="path-text">${escapeHTML(item.path || "-")}</span>
         </div>
-        <div class="subtle">${escapeHTML(item.query || "No query string")}</div>
+        <div class="subtle">${escapeHTML(item.query || t("no-query-string"))}</div>
       </div>`;
 
     row.innerHTML = `
-      <td class="align-left sticky-col sticky-time">${metricCell(fmtDate(item.created_at), item.client_ip || "unknown client")}</td>
+      <td class="align-left sticky-col sticky-time">${metricCell(fmtDate(item.created_at), item.client_ip || t("unknown-client"))}</td>
       <td class="sticky-col sticky-request">${requestCell}</td>
       <td class="align-center"><span class="status-badge ${statusClass(item.status_code || 0)}">${escapeHTML(statusText(item))}</span></td>
       <td class="align-left">
         <div class="model-text cell-metric">${escapeHTML(item.model || "-")}</div>
-        <div class="cell-subtle">${!completed ? "in progress" : item.is_streaming ? "streaming" : "standard"}</div>
+        <div class="cell-subtle">${!completed ? t("row.in-progress") : item.is_streaming ? t("row.streaming") : t("row.standard")}</div>
       </td>
-      <td class="align-right ${latencyTone(item.first_byte_ms)}">${numericCell(fmtMs(item.first_byte_ms), "first token")}</td>
-      <td class="align-right">${numericCell(fmtMs(item.total_ms), !completed ? "running" : `${fmtNum(item.chunks_count || 0)} chunks`)}</td>
+      <td class="align-right ${latencyTone(item.first_byte_ms)}">${numericCell(fmtMs(item.first_byte_ms), t("first-token"))}</td>
+      <td class="align-right">${numericCell(fmtMs(item.total_ms), !completed ? t("running") : t("chunks", { n: fmtNum(item.chunks_count || 0) }))}</td>
       <td class="align-right">${numericCell(fmtNum(item.prompt_tokens || 0))}</td>
       <td class="align-right">${numericCell(fmtNum(item.completion_tokens || 0))}</td>
       <td class="align-right">${numericCell(fmtNum(item.total_tokens || 0))}</td>
-      <td class="align-right ${cacheTone(item.cache_hit_pct || 0)}">${numericCell(fmtPercentValue(item.cache_hit_pct || 0), item.cached_prompt_tokens > 0 ? `${fmtNum(item.cached_prompt_tokens)} cached` : "no cache")}</td>
-      <td class="align-right ${rateTone(item.decode_tok_per_sec || 0)}">${numericCell(fmtRate(item.decode_tok_per_sec || 0), `prompt ${fmtRate(item.prompt_tok_per_sec || 0)}`)}</td>
+      <td class="align-right ${cacheTone(item.cache_hit_pct || 0)}">${numericCell(fmtPercentValue(item.cache_hit_pct || 0), item.cached_prompt_tokens > 0 ? t("cached", { n: fmtNum(item.cached_prompt_tokens) }) : t("no-cache"))}</td>
+      <td class="align-right ${rateTone(item.decode_tok_per_sec || 0)}">${numericCell(fmtRate(item.decode_tok_per_sec || 0), t("prompt", { n: fmtRate(item.prompt_tok_per_sec || 0) }))}</td>
     `;
 
     if (completed) {
@@ -559,7 +960,8 @@ function renderRequests(items) {
 async function fetchRaw(id, part) {
   const resp = await fetch(`/_monitor/raw/${encodeURIComponent(id)}/${part}`);
   if (!resp.ok) {
-    return `${part} payload unavailable (${resp.status})`;
+    const partLabel = part === "request" ? (currentLang === "zh" ? "请求" : "request") : (currentLang === "zh" ? "响应" : "response");
+    return `${partLabel} ${t("payload-unavailable")} (${resp.status})`;
   }
   const text = await resp.text();
   try {
@@ -580,11 +982,13 @@ async function openDetails(id) {
 
   const rec = await fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`);
   el.drawerTitle.textContent = `${rec.method || "-"} ${rec.path || "-"}`;
+  delete el.drawerTitle.dataset.i18n;
   el.drawerMeta.textContent = `${rec.method || "-"} ${rec.path || "-"}${rec.query ? `?${rec.query}` : ""}`;
+  delete el.drawerMeta.dataset.i18n;
   el.detailModel.textContent = rec.model || "-";
   el.detailStatusBadge.textContent = statusText(rec);
   el.detailStatusBadge.className = `status-badge ${detailStatusClass(rec)}`;
-  el.detailStreamChip.textContent = rec.is_streaming ? "Streaming" : "Standard";
+  el.detailStreamChip.textContent = rec.is_streaming ? t("streaming") : t("standard");
 
   el.detailStatus.textContent = statusText(rec);
   el.detailTtft.textContent = fmtMs(rec.first_byte_ms);
@@ -613,9 +1017,12 @@ async function openDetails(id) {
   setToneClass(el.detailPromptRate.parentElement, "mini-stat-", rateTone(rec.prompt_tok_per_sec || 0).replace("tone-", ""));
   setToneClass(el.detailDecodeRate.parentElement, "mini-stat-", rateTone(rec.decode_tok_per_sec || 0).replace("tone-", ""));
   setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", cacheTone(rec.cache_hit_pct || 0).replace("tone-", ""));
-  el.rawReq.textContent = "Loading request payload...";
-  el.structuredResp.textContent = "Building structured response...";
-  el.rawResp.textContent = "Loading response payload...";
+  el.rawReq.textContent = t("loading-request-payload");
+  delete el.rawReq.dataset.i18n;
+  el.structuredResp.textContent = t("building-structured-response");
+  delete el.structuredResp.dataset.i18n;
+  el.rawResp.textContent = t("loading-response-payload");
+  delete el.rawResp.dataset.i18n;
 
   const [rawReq, rawResp] = await Promise.all([
     fetchRaw(id, "request"),
@@ -637,8 +1044,10 @@ function clearDetails() {
   el.drawer.setAttribute("aria-hidden", "true");
   el.drawerOverlay.hidden = true;
   document.body.classList.remove("drawer-open");
-  el.drawerTitle.textContent = "Select a request";
-  el.drawerMeta.textContent = "Choose a row to inspect request metadata and raw payloads.";
+  el.drawerTitle.textContent = t("no-selection");
+  el.drawerTitle.dataset.i18n = "no-selection";
+  el.drawerMeta.textContent = t("choose-row");
+  el.drawerMeta.dataset.i18n = "choose-row";
   el.detailModel.textContent = "-";
   el.detailStatusBadge.textContent = "-";
   el.detailStatusBadge.className = "status-badge status-live";
@@ -670,9 +1079,12 @@ function clearDetails() {
   setToneClass(el.detailPromptRate.parentElement, "mini-stat-", "");
   setToneClass(el.detailDecodeRate.parentElement, "mini-stat-", "");
   setToneClass(el.detailCacheHitPct.parentElement, "mini-stat-", "");
-  el.rawReq.textContent = "No request selected.";
-  el.structuredResp.textContent = "No request selected.";
-  el.rawResp.textContent = "No request selected.";
+  el.rawReq.textContent = t("no-request-selected");
+  el.rawReq.dataset.i18n = "no-request-selected";
+  el.structuredResp.textContent = t("no-request-selected");
+  el.structuredResp.dataset.i18n = "no-request-selected";
+  el.rawResp.textContent = t("no-request-selected");
+  el.rawResp.dataset.i18n = "no-request-selected";
   renderRequests(state.latestItems);
 }
 
@@ -681,7 +1093,7 @@ async function deleteSelectedRequest() {
     return;
   }
   const id = state.selectedId;
-  const ok = window.confirm(`Delete request ${id}? This will remove the DB row and raw payloads.`);
+  const ok = window.confirm(t("confirm-delete", { id }));
   if (!ok) {
     return;
   }
@@ -707,7 +1119,7 @@ function setupTabs() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStats(), loadRequests()]);
+  await Promise.all([loadStats(), loadRequests(), loadBackendStats()]);
 }
 
 function scheduleEventRefresh() {
@@ -719,7 +1131,7 @@ function scheduleEventRefresh() {
   }
   state.refreshTimer = setTimeout(() => {
     refreshAll().catch((err) => {
-      setLiveState("error", `Refresh failed: ${err.message}`);
+      setLiveState("error", t("live-refresh-failed", { msg: err.message }));
     });
   }, 180);
 }
@@ -728,11 +1140,11 @@ function connectEvents() {
   const source = new EventSource("/_monitor/events");
 
   source.onopen = () => {
-    setLiveState("live", "Live stream connected");
+    setLiveState("live", t("live-connected"));
   };
 
   source.onerror = () => {
-    setLiveState("retry", "Reconnecting to event stream");
+    setLiveState("retry", t("live-reconnect"));
   };
 
   source.addEventListener("request", () => {
@@ -760,12 +1172,12 @@ function wireFilters() {
 
   el.refreshNow.addEventListener("click", () => {
     refreshAll().catch((err) => {
-      setLiveState("error", `Refresh failed: ${err.message}`);
+      setLiveState("error", t("live-refresh-failed", { msg: err.message }));
     });
   });
   el.loadMoreBtn.addEventListener("click", () => {
     loadMoreRequests().catch((err) => {
-      setLiveState("error", `Load more failed: ${err.message}`);
+      setLiveState("error", t("live-load-more-failed", { msg: err.message }));
       syncLoadMoreState();
     });
   });
@@ -778,10 +1190,22 @@ function wireFilters() {
   el.drawerClose.addEventListener("click", clearDetails);
   el.drawerDelete.addEventListener("click", () => {
     deleteSelectedRequest().catch((err) => {
-      setLiveState("error", `Delete failed: ${err.message}`);
+      setLiveState("error", t("live-delete-failed", { msg: err.message }));
     });
   });
   el.drawerOverlay.addEventListener("click", clearDetails);
+
+  const btnLang = document.getElementById("btnLang");
+  if (btnLang) {
+    btnLang.addEventListener("click", toggleLanguage);
+  }
+
+  if (el.fBackend) {
+    el.fBackend.addEventListener("change", async () => {
+      collectFilters();
+      await loadRequests();
+    });
+  }
 
   [el.fQuery, el.fPath, el.fModel, el.fStatus, el.fSince].forEach((node) => {
     node.addEventListener("keydown", async (event) => {
@@ -794,6 +1218,7 @@ function wireFilters() {
 }
 
 async function boot() {
+  applyLanguage();
   renderFilterTags();
   setFiltersCollapsed(localStorage.getItem(FILTERS_COLLAPSED_KEY) === "1");
   setMetricsMode(localStorage.getItem(METRICS_MODE_KEY) || "cards");
@@ -801,7 +1226,7 @@ async function boot() {
   setupTabs();
   wireFilters();
   connectEvents();
-  await Promise.all([refreshAll(), loadModelOptions()]);
+  await Promise.all([refreshAll(), loadModelOptions(), loadBackends()]);
   window.setInterval(() => {
     if (!state.autoRefresh) {
       return;
@@ -816,9 +1241,10 @@ async function boot() {
   }, 9000);
   window.setInterval(() => {
     loadModelOptions().catch(() => {});
+    loadBackends().catch(() => {});
   }, 30000);
 }
 
 boot().catch((err) => {
-  setLiveState("error", `Boot failed: ${err.message}`);
+  setLiveState("error", t("live-boot-failed", { msg: err.message }));
 });

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -23,13 +24,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 type Config struct {
 	ListenAddr          string
-	DefaultBackend      string
 	AllowDynamicBackend bool
 	DataDir             string
 	RetentionDays       int
@@ -43,9 +41,8 @@ type Config struct {
 func loadConfig() Config {
 	return Config{
 		ListenAddr:          getEnv("LISTEN_ADDR", ":9091"),
-		DefaultBackend:      strings.TrimRight(getEnv("DEFAULT_BACKEND_URL", "http://host.docker.internal:8080"), "/"),
 		AllowDynamicBackend: getEnvBool("ALLOW_DYNAMIC_BACKEND", true),
-		DataDir:             getEnv("DATA_DIR", "/app/data"),
+		DataDir:             getEnv("DATA_DIR", "./data"),
 		RetentionDays:       getEnvInt("RETENTION_DAYS", 14),
 		MaxRequestBytes:     getEnvInt64("MAX_REQUEST_BYTES", 32*1024*1024),
 		MaxCaptureBytes:     getEnvInt64("MAX_CAPTURE_BYTES", 32*1024*1024),
@@ -56,11 +53,52 @@ func loadConfig() Config {
 }
 
 type Server struct {
-	cfg    Config
-	db     *sql.DB
-	client *http.Client
-	hub    *EventHub
-	active atomic.Int64
+	cfg      Config
+	yamlCfg  *YAMLConfig
+	db       Database
+	balancer *BackendBalancer
+	client   *http.Client
+	hub      *EventHub
+	active   atomic.Int64
+}
+
+func (s *Server) rebind(q string) string {
+	return s.db.Rebind(q)
+}
+
+func (s *Server) isPostgres() bool {
+	return s.db.GetType() == "postgresql"
+}
+
+func (s *Server) streamValue(v bool) any {
+	if s.isPostgres() {
+		return v
+	}
+	return boolToInt(v)
+}
+
+func (s *Server) createdAtValue(t time.Time) any {
+	if s.isPostgres() {
+		return t.UTC()
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func (s *Server) isStreamingValue(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case int64:
+		return x != 0
+	case int:
+		return x != 0
+	case []byte:
+		return len(x) > 0 && x[0] == '1'
+	case string:
+		return x == "1" || x == "true" || x == "t"
+	default:
+		return false
+	}
 }
 
 type RequestRecord struct {
@@ -99,6 +137,7 @@ type RequestFilter struct {
 	Path                string
 	Model               string
 	Method              string
+	Backend             string
 	Search              string
 	StatusCode          int
 	SinceHours          int
@@ -152,23 +191,66 @@ func (h *EventHub) Broadcast(v any) {
 }
 
 func main() {
-	cfg := loadConfig()
+	var yamlCfg *YAMLConfig
+	var cfg Config
 
-	if err := validateBackendURL(cfg.DefaultBackend); err != nil {
-		log.Fatalf("invalid DEFAULT_BACKEND_URL: %v", err)
+	yamlPath := flag.String("f", "", "path to YAML config file")
+	flag.Parse()
+
+	configPath := *yamlPath
+	if configPath == "" {
+		configPath = os.Getenv("CONFIG_PATH")
+	}
+	if configPath == "" {
+		configPath = "config.yaml"
+	}
+
+	if _, err := os.Stat(configPath); err == nil {
+		var err error
+		yamlCfg, err = loadYAMLConfig(configPath)
+		if err != nil {
+			log.Printf("load yaml config failed: %v, falling back to env", err)
+			yamlCfg = nil
+		}
+	}
+
+	if yamlCfg != nil {
+		cfg = yamlCfg.toLegacyConfig()
+	} else {
+		cfg = loadConfig()
+	}
+
+	hasLB := yamlCfg != nil && len(yamlCfg.getEnabledBackends()) > 0
+	if yamlCfg != nil && !hasLB && !yamlCfg.Backends.AllowDynamic {
+		log.Fatal("no enabled backend in backends.list and dynamic backend override is disabled")
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("mkdir data dir: %v", err)
 	}
 
-	dbPath := filepath.Join(cfg.DataDir, "monitor.db")
-	db, err := sql.Open("sqlite", dbPath)
+	var db Database
+	var err error
+	if yamlCfg != nil {
+		db, err = NewDatabase(yamlCfg.Database, cfg.DataDir)
+	} else {
+		sqlCfg := DatabaseConfig{
+			Type: "sqlite",
+			SQLite: SQLiteConfig{
+				Path: "monitor.db",
+			},
+		}
+		db, err = NewDatabase(sqlCfg, cfg.DataDir)
+	}
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
-	if err := initDB(db); err != nil {
+	dbType := "sqlite"
+	if yamlCfg != nil {
+		dbType = yamlCfg.Database.Type
+	}
+	if err := InitDB(db, dbType); err != nil {
 		log.Fatalf("init db: %v", err)
 	}
 	if err := normalizeDB(db); err != nil {
@@ -176,6 +258,12 @@ func main() {
 	}
 	if err := repairStuckRequests(db, cfg.DataDir); err != nil {
 		log.Printf("repair stuck requests failed: %v", err)
+	}
+
+	var backendBalancer *BackendBalancer
+	if yamlCfg != nil && yamlCfg.hasWeightedBackends() {
+		backendBalancer = NewBackendBalancer(yamlCfg.getEnabledBackends(), yamlCfg.Backends.Strategy)
+		log.Printf("load balancer initialized with strategy: %s, backends: %d", yamlCfg.Backends.Strategy, backendBalancer.GetEnabledCount())
 	}
 
 	transport := &http.Transport{
@@ -190,8 +278,10 @@ func main() {
 	}
 
 	s := &Server{
-		cfg: cfg,
-		db:  db,
+		cfg:      cfg,
+		yamlCfg:  yamlCfg,
+		db:       db,
+		balancer: backendBalancer,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   cfg.RequestTimeout,
@@ -206,7 +296,11 @@ func main() {
 		go s.backendMetricsLoop(ctx)
 	}
 
-	log.Printf("llama.cpp Router Monitor listening on %s, backend=%s", cfg.ListenAddr, cfg.DefaultBackend)
+	backendCount := 0
+	if s.balancer != nil {
+		backendCount = s.balancer.GetEnabledCount()
+	}
+	log.Printf("llama.cpp Router Monitor listening on %s, backends=%d", cfg.ListenAddr, backendCount)
 	if err := http.ListenAndServe(cfg.ListenAddr, s); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
@@ -263,6 +357,21 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case p == "/backends":
+		items, err := s.getBackends()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case p == "/stats-by-backend":
+		hours := getQueryInt(r, "hours", 24)
+		items, err := s.getStatsByBackend(hours)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "hours": hours})
 	case p == "/requests":
 		limit := getQueryInt(r, "limit", 100)
 		offset := getQueryInt(r, "offset", 0)
@@ -323,6 +432,7 @@ func parseRequestFilter(r *http.Request) RequestFilter {
 		Path:                strings.TrimSpace(r.URL.Query().Get("path")),
 		Model:               strings.TrimSpace(r.URL.Query().Get("model")),
 		Method:              strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("method"))),
+		Backend:             strings.TrimSpace(r.URL.Query().Get("backend")),
 		Search:              strings.TrimSpace(r.URL.Query().Get("q")),
 		StatusCode:          getQueryInt(r, "status", 0),
 		SinceHours:          getQueryInt(r, "since_hours", 0),
@@ -388,6 +498,7 @@ func (s *Server) handleRaw(w http.ResponseWriter, p string) {
 
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
 	rel := strings.TrimPrefix(p, "/ui")
+	w.Header().Set("Cache-Control", "no-cache")
 	if rel == "" || rel == "/" {
 		http.ServeFile(w, r, filepath.Join("web", "index.html"))
 		return
@@ -437,7 +548,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := newID()
 	clientIP := getClientIP(r)
-	backendURL, trimmedQuery, err := s.selectBackend(r)
+	backendURL, trimmedQuery, backendCfg, err := s.selectBackend(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -459,6 +570,12 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStreaming, model := detectRequestMeta(requestBody)
+	if backendCfg != nil && backendCfg.Model != "" {
+		if newBody, newModel, rerr := rewriteModel(requestBody, backendCfg.Model); rerr == nil {
+			requestBody = newBody
+			model = newModel
+		}
+	}
 	reqRawPath, err := s.saveRawPayload(requestID, "request", requestBody)
 	if err != nil {
 		log.Printf("save request raw failed: %v", err)
@@ -492,6 +609,9 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyRequestHeaders(outReq.Header, r.Header)
+	if backendCfg != nil && backendCfg.APIKey != "" {
+		outReq.Header.Set("Authorization", "Bearer "+backendCfg.APIKey)
+	}
 	outReq.Header.Set("X-Proxy-Request-ID", requestID)
 	outReq.ContentLength = int64(len(requestBody))
 
@@ -594,21 +714,38 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) selectBackend(r *http.Request) (backend string, query string, err error) {
-	backend = s.cfg.DefaultBackend
+func (s *Server) selectBackend(r *http.Request) (backend string, query string, bc *BackendConfig, err error) {
 	vals := r.URL.Query()
+
 	if s.cfg.AllowDynamicBackend {
 		if b := strings.TrimSpace(r.Header.Get("X-Backend-URL")); b != "" {
 			backend = strings.TrimRight(b, "/")
+			bc = nil
 		} else if b := strings.TrimSpace(vals.Get("backend")); b != "" {
 			backend = strings.TrimRight(b, "/")
 			vals.Del("backend")
+			bc = nil
+		} else if s.balancer != nil {
+			if b := s.balancer.Select(); b != nil {
+				backend = strings.TrimRight(b.URL, "/")
+				bc = b
+			}
+		}
+	} else if s.balancer != nil {
+		if b := s.balancer.Select(); b != nil {
+			backend = strings.TrimRight(b.URL, "/")
+			bc = b
 		}
 	}
-	if err = validateBackendURL(backend); err != nil {
-		return "", "", fmt.Errorf("invalid backend URL: %w", err)
+
+	if backend == "" {
+		return "", "", nil, fmt.Errorf("no backend selected: configure backends.list or provide a dynamic backend override")
 	}
-	return backend, vals.Encode(), nil
+
+	if err = validateBackendURL(backend); err != nil {
+		return "", "", nil, fmt.Errorf("invalid backend URL: %w", err)
+	}
+	return backend, vals.Encode(), bc, nil
 }
 
 func isStreamingResponse(resp *http.Response, reqStreaming bool) bool {
@@ -814,6 +951,23 @@ func detectRequestMeta(body []byte) (isStreaming bool, model string) {
 	return
 }
 
+// rewriteModel replaces the "model" field in a JSON request body with the
+// backend's actual model ID. It returns the rewritten body and the new model
+// name. If the body is not valid JSON (or has no model field), the original
+// body is returned unchanged.
+func rewriteModel(body []byte, model string) ([]byte, string, error) {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body, "", err
+	}
+	m["model"] = model
+	newBody, err := json.Marshal(m)
+	if err != nil {
+		return body, "", err
+	}
+	return newBody, model, nil
+}
+
 func (s *Server) saveRawPayload(requestID string, kind string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", nil
@@ -859,92 +1013,7 @@ func readGzipFile(path string) ([]byte, error) {
 	return io.ReadAll(gr)
 }
 
-func initDB(db *sql.DB) error {
-	stmts := []string{
-		`PRAGMA journal_mode = WAL;`,
-		`PRAGMA synchronous = NORMAL;`,
-		`PRAGMA busy_timeout = 5000;`,
-		`CREATE TABLE IF NOT EXISTS requests (
-			id TEXT PRIMARY KEY,
-			created_at DATETIME NOT NULL,
-			method TEXT NOT NULL,
-			path TEXT NOT NULL,
-			query TEXT,
-			client_ip TEXT,
-			backend_url TEXT,
-			model TEXT,
-			is_streaming INTEGER NOT NULL DEFAULT 0,
-			status_code INTEGER NOT NULL DEFAULT 0,
-			error_text TEXT,
-			request_bytes INTEGER NOT NULL DEFAULT 0,
-			response_bytes INTEGER NOT NULL DEFAULT 0,
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			cache_hit_pct REAL NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			total_tokens INTEGER NOT NULL DEFAULT 0,
-			prompt_ms REAL NOT NULL DEFAULT 0,
-			completion_ms REAL NOT NULL DEFAULT 0,
-			total_ms REAL NOT NULL DEFAULT 0,
-			first_byte_ms REAL NOT NULL DEFAULT 0,
-			chunks_count INTEGER NOT NULL DEFAULT 0,
-			request_raw_path TEXT,
-			response_raw_path TEXT,
-			user_agent TEXT
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_path ON requests(path);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);`,
-		`CREATE TABLE IF NOT EXISTS backend_metrics (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at DATETIME NOT NULL,
-			backend_url TEXT NOT NULL,
-			metric_name TEXT NOT NULL,
-			metric_value REAL NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_backend_metrics_created_at ON backend_metrics(created_at DESC);`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureRequestColumn(db, "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := ensureRequestColumn(db, "cache_hit_pct", "REAL NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	return nil
-}
-
-func ensureRequestColumn(db *sql.DB, name string, def string) error {
-	rows, err := db.Query(`PRAGMA table_info(requests)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var colName, colType string
-		var notnull int
-		var dfltValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &colName, &colType, &notnull, &dfltValue, &pk); err != nil {
-			return err
-		}
-		if colName == name {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = db.Exec(fmt.Sprintf(`ALTER TABLE requests ADD COLUMN %s %s`, name, def))
-	return err
-}
-
-func normalizeDB(db *sql.DB) error {
+func normalizeDB(db Database) error {
 	_, err := db.Exec(`UPDATE requests SET
 		query = COALESCE(query, ''),
 		client_ip = COALESCE(client_ip, ''),
@@ -985,7 +1054,24 @@ func isBusyError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlbusy") || strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "busy")
+	for _, pat := range []string{
+		"database is locked",
+		"sqlbusy",
+		"sqlite_busy",
+		"busy",
+		"deadlock detected",
+		"deadlock_detected",
+		"could not serialize access",
+		"serialization_failure",
+		"lock timeout",
+		"lock_timeout",
+		"database table is locked",
+	} {
+		if strings.Contains(msg, pat) {
+			return true
+		}
+	}
+	return false
 }
 
 func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
@@ -1007,7 +1093,7 @@ func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
 	return "", false
 }
 
-func repairStuckRequests(db *sql.DB, dataDir string) error {
+func repairStuckRequests(db Database, dataDir string) error {
 	rows, err := db.Query(`SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
 		is_streaming, status_code, error_text, request_bytes, response_bytes,
@@ -1021,7 +1107,7 @@ func repairStuckRequests(db *sql.DB, dataDir string) error {
 	defer rows.Close()
 
 	for rows.Next() {
-		rec, err := scanRequest(rows)
+		rec, err := scanRequest(rows, db.GetType() == "postgresql")
 		if err != nil {
 			return err
 		}
@@ -1054,7 +1140,7 @@ func repairStuckRequests(db *sql.DB, dataDir string) error {
 		}
 		rec.ResponseRawPath = respRel
 		if err := retryDBWrite(func() error {
-			_, err := db.Exec(`UPDATE requests SET
+			_, err := db.Exec(db.Rebind(`UPDATE requests SET
 				model = ?,
 				status_code = ?,
 				error_text = ?,
@@ -1070,7 +1156,7 @@ func repairStuckRequests(db *sql.DB, dataDir string) error {
 				first_byte_ms = ?,
 				chunks_count = ?,
 				response_raw_path = ?
-				WHERE id = ?`,
+				WHERE id = ?`),
 				rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
 				rec.PromptTokens, rec.CachedPromptTokens, rec.CacheHitPct, rec.CompletionTokens, rec.TotalTokens,
 				rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
@@ -1086,12 +1172,12 @@ func repairStuckRequests(db *sql.DB, dataDir string) error {
 
 func (s *Server) insertRequest(rec RequestRecord) error {
 	return retryDBWrite(func() error {
-		_, err := s.db.Exec(`INSERT INTO requests (
+		_, err := s.db.Exec(s.rebind(`INSERT INTO requests (
 			id, created_at, method, path, query, client_ip, backend_url, model,
 			is_streaming, request_bytes, request_raw_path, user_agent
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, rec.CreatedAt.Format(time.RFC3339Nano), rec.Method, rec.Path, rec.Query,
-			rec.ClientIP, rec.BackendURL, rec.Model, boolToInt(rec.IsStreaming),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			rec.ID, s.createdAtValue(rec.CreatedAt), rec.Method, rec.Path, rec.Query,
+			rec.ClientIP, rec.BackendURL, rec.Model, s.streamValue(rec.IsStreaming),
 			rec.RequestBytes, rec.RequestRawPath, rec.UserAgent,
 		)
 		return err
@@ -1100,7 +1186,7 @@ func (s *Server) insertRequest(rec RequestRecord) error {
 
 func (s *Server) finishRequest(id string, rec RequestRecord) error {
 	return retryDBWrite(func() error {
-		_, err := s.db.Exec(`UPDATE requests SET
+		_, err := s.db.Exec(s.rebind(`UPDATE requests SET
 			model = ?,
 			status_code = ?,
 			error_text = ?,
@@ -1116,7 +1202,7 @@ func (s *Server) finishRequest(id string, rec RequestRecord) error {
 			first_byte_ms = ?,
 			chunks_count = ?,
 			response_raw_path = ?
-			WHERE id = ?`,
+			WHERE id = ?`),
 			rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
 			rec.PromptTokens, rec.CachedPromptTokens, rec.CacheHitPct, rec.CompletionTokens, rec.TotalTokens,
 			rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
@@ -1142,12 +1228,12 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 		FROM requests WHERE 1=1`
 	args := make([]any, 0, 16)
 
-	query, args = appendRequestFilterSQL(query, args, f, true)
+	query, args = appendRequestFilterSQL(query, args, f, true, s.isPostgres())
 
 	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.db.Query(s.rebind(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1155,7 +1241,7 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 
 	out := make([]RequestRecord, 0, limit)
 	for rows.Next() {
-		rec, err := scanRequest(rows)
+		rec, err := scanRequest(rows, s.isPostgres())
 		if err != nil {
 			return nil, err
 		}
@@ -1166,14 +1252,14 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 }
 
 func (s *Server) getRequestByID(id string) (RequestRecord, error) {
-	row := s.db.QueryRow(`SELECT
+	row := s.db.QueryRow(s.rebind(`SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
 		is_streaming, status_code, error_text, request_bytes, response_bytes,
 		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
 		prompt_ms, completion_ms, total_ms, first_byte_ms, chunks_count,
 		request_raw_path, response_raw_path, user_agent
-		FROM requests WHERE id = ?`, id)
-	rec, err := scanRequest(row)
+		FROM requests WHERE id = ?`), id)
+	rec, err := scanRequest(row, s.isPostgres())
 	if err != nil {
 		return rec, err
 	}
@@ -1200,7 +1286,7 @@ func (s *Server) deleteRequestByID(id string) error {
 	}
 	var affected int64
 	err = retryDBWrite(func() error {
-		res, err := s.db.Exec(`DELETE FROM requests WHERE id = ?`, id)
+		res, err := s.db.Exec(s.rebind(`DELETE FROM requests WHERE id = ?`), id)
 		if err != nil {
 			return err
 		}
@@ -1223,7 +1309,13 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 	if f.SinceHours > 0 {
 		hours = f.SinceHours
 	}
-	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339Nano)
+
+	var streamSumSQL = `COALESCE(SUM(is_streaming),0)`
+	if s.isPostgres() {
+		streamSumSQL = `COALESCE(SUM(CASE WHEN is_streaming THEN 1 ELSE 0 END),0)`
+	}
+	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
+	sinceVal := s.createdAtValue(since)
 
 	var totalRequests int64
 	var promptTokens int64
@@ -1254,12 +1346,12 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 		COALESCE(AVG(total_ms),0),
 		COALESCE(AVG(first_byte_ms),0),
 		COALESCE(SUM(CASE WHEN status_code >= 400 OR error_text != '' THEN 1 ELSE 0 END),0),
-		COALESCE(SUM(is_streaming),0)
+		` + streamSumSQL + `
 		FROM requests WHERE created_at >= ?`
-	args := []any{since}
-	query, args = appendRequestFilterSQL(query, args, f, false)
+	args := []any{sinceVal}
+	query, args = appendRequestFilterSQL(query, args, f, false, s.isPostgres())
 
-	err := s.db.QueryRow(query, args...).Scan(
+	err := s.db.QueryRow(s.rebind(query), args...).Scan(
 		&totalRequests,
 		&promptTokens,
 		&completionTokens,
@@ -1287,8 +1379,8 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 		COALESCE(SUM(total_tokens),0)
 		FROM requests WHERE 1=1`
 	matchArgs := []any{}
-	matchQuery, matchArgs = appendRequestFilterSQL(matchQuery, matchArgs, f, true)
-	if err := s.db.QueryRow(matchQuery, matchArgs...).Scan(&matchingRequests, &matchingTokens); err != nil {
+	matchQuery, matchArgs = appendRequestFilterSQL(matchQuery, matchArgs, f, true, s.isPostgres())
+	if err := s.db.QueryRow(s.rebind(matchQuery), matchArgs...).Scan(&matchingRequests, &matchingTokens); err != nil {
 		return nil, err
 	}
 
@@ -1330,10 +1422,14 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 }
 
 func (s *Server) getModels() ([]string, error) {
+	orderSQL := `ORDER BY model COLLATE NOCASE ASC`
+	if s.isPostgres() {
+		orderSQL = `ORDER BY lower(model) ASC`
+	}
 	rows, err := s.db.Query(`SELECT DISTINCT model
 		FROM requests
 		WHERE model IS NOT NULL AND TRIM(model) != ''
-		ORDER BY model COLLATE NOCASE ASC`)
+		` + orderSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -1354,12 +1450,105 @@ func (s *Server) getModels() ([]string, error) {
 	return items, rows.Err()
 }
 
+func (s *Server) getBackends() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT backend_url
+		FROM requests
+		WHERE backend_url IS NOT NULL AND TRIM(backend_url) != ''
+		ORDER BY backend_url ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]string, 0, 16)
+	for rows.Next() {
+		var backend string
+		if err := rows.Scan(&backend); err != nil {
+			return nil, err
+		}
+		backend = strings.TrimSpace(backend)
+		if backend == "" {
+			continue
+		}
+		items = append(items, backend)
+	}
+	return items, rows.Err()
+}
+
+func (s *Server) getStatsByBackend(hours int) ([]map[string]any, error) {
+	if hours <= 0 {
+		hours = 24
+	}
+	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
+	sinceVal := s.createdAtValue(since)
+
+	var streamSumSQL = `COALESCE(SUM(is_streaming),0)`
+	if s.isPostgres() {
+		streamSumSQL = `COALESCE(SUM(CASE WHEN is_streaming THEN 1 ELSE 0 END),0)`
+	}
+
+	query := `SELECT
+		backend_url,
+		COUNT(*),
+		COALESCE(SUM(prompt_tokens),0),
+		COALESCE(SUM(completion_tokens),0),
+		COALESCE(SUM(total_tokens),0),
+		COALESCE(AVG(total_ms),0),
+		COALESCE(AVG(first_byte_ms),0),
+		COALESCE(SUM(CASE WHEN status_code >= 400 OR error_text != '' THEN 1 ELSE 0 END),0),
+		` + streamSumSQL + `
+		FROM requests
+		WHERE created_at >= ? AND backend_url IS NOT NULL AND TRIM(backend_url) != ''
+		GROUP BY backend_url
+		ORDER BY COUNT(*) DESC`
+
+	rows, err := s.db.Query(s.rebind(query), sinceVal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]any, 0, 16)
+	for rows.Next() {
+		var backend string
+		var count int64
+		var promptTokens int64
+		var completionTokens int64
+		var totalTokens int64
+		var avgTotalMs float64
+		var avgFirstByteMs float64
+		var errorsCount int64
+		var streamCount int64
+		if err := rows.Scan(&backend, &count, &promptTokens, &completionTokens, &totalTokens,
+			&avgTotalMs, &avgFirstByteMs, &errorsCount, &streamCount); err != nil {
+			return nil, err
+		}
+		errorRate := 0.0
+		if count > 0 {
+			errorRate = float64(errorsCount) / float64(count)
+		}
+		out = append(out, map[string]any{
+			"backend_url":        backend,
+			"requests":           count,
+			"prompt_tokens":      promptTokens,
+			"completion_tokens":  completionTokens,
+			"total_tokens":       totalTokens,
+			"avg_total_ms":       avgTotalMs,
+			"avg_first_byte_ms":  avgFirstByteMs,
+			"errors_count":       errorsCount,
+			"error_rate":         errorRate,
+			"streaming_requests": streamCount,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (s *Server) getBackendMetrics(limit int) ([]map[string]any, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 200
 	}
-	rows, err := s.db.Query(`SELECT created_at, backend_url, metric_name, metric_value
-		FROM backend_metrics ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+	rows, err := s.db.Query(s.rebind(`SELECT created_at, backend_url, metric_name, metric_value
+		FROM backend_metrics ORDER BY created_at DESC, id DESC LIMIT ?`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1402,15 +1591,16 @@ func (s *Server) cleanup() {
 	if s.cfg.RetentionDays <= 0 {
 		return
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays).Format(time.RFC3339Nano)
+	cutoff := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays)
+	cutoffVal := s.createdAtValue(cutoff)
 	if err := retryDBWrite(func() error {
-		_, err := s.db.Exec(`DELETE FROM requests WHERE created_at < ?`, cutoff)
+		_, err := s.db.Exec(s.rebind(`DELETE FROM requests WHERE created_at < ?`), cutoffVal)
 		return err
 	}); err != nil {
 		log.Printf("cleanup requests failed: %v", err)
 	}
 	if err := retryDBWrite(func() error {
-		_, err := s.db.Exec(`DELETE FROM backend_metrics WHERE created_at < ?`, cutoff)
+		_, err := s.db.Exec(s.rebind(`DELETE FROM backend_metrics WHERE created_at < ?`), cutoffVal)
 		return err
 	}); err != nil {
 		log.Printf("cleanup backend_metrics failed: %v", err)
@@ -1437,7 +1627,7 @@ func (s *Server) cleanup() {
 	}
 }
 
-func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSince bool) (string, []any) {
+func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSince bool, isPostgres bool) (string, []any) {
 	if f.ChatCompletionsOnly {
 		query += ` AND method = ? AND path = ?`
 		args = append(args, http.MethodPost, "/v1/chat/completions")
@@ -1454,18 +1644,31 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSi
 		query += ` AND method = ?`
 		args = append(args, f.Method)
 	}
+	if f.Backend != "" {
+		query += ` AND backend_url = ?`
+		args = append(args, f.Backend)
+	}
 	if f.StatusCode > 0 {
 		query += ` AND status_code = ?`
 		args = append(args, f.StatusCode)
 	}
 	if includeSince && f.SinceHours > 0 {
-		since := time.Now().UTC().Add(-time.Duration(f.SinceHours) * time.Hour).Format(time.RFC3339Nano)
-		query += ` AND created_at >= ?`
-		args = append(args, since)
+		since := time.Now().UTC().Add(-time.Duration(f.SinceHours) * time.Hour)
+		if isPostgres {
+			query += ` AND created_at >= ?`
+			args = append(args, since)
+		} else {
+			query += ` AND created_at >= ?`
+			args = append(args, since.Format(time.RFC3339Nano))
+		}
 	}
 	if f.Streaming != nil {
 		query += ` AND is_streaming = ?`
-		args = append(args, boolToInt(*f.Streaming))
+		if isPostgres {
+			args = append(args, *f.Streaming)
+		} else {
+			args = append(args, boolToInt(*f.Streaming))
+		}
 	}
 	if f.ErrorsOnly {
 		query += ` AND (status_code >= 400 OR error_text != '')`
@@ -1497,7 +1700,26 @@ func (s *Server) backendMetricsLoop(ctx context.Context) {
 }
 
 func (s *Server) pollBackendMetrics(ctx context.Context) {
-	u := s.cfg.DefaultBackend + "/metrics"
+	// Collect all enabled backends (from the balancer list) to poll.
+	var urls []string
+	if s.balancer != nil {
+		for _, name := range s.balancer.Names() {
+			if b := s.balancer.GetBackendByName(name); b != nil {
+				urls = append(urls, strings.TrimRight(b.URL, "/"))
+			}
+		}
+	}
+	if len(urls) == 0 {
+		return
+	}
+
+	for _, u := range urls {
+		s.pollBackendMetricsURL(ctx, u)
+	}
+}
+
+func (s *Server) pollBackendMetricsURL(ctx context.Context, baseURL string) {
+	u := baseURL + "/metrics"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -1512,14 +1734,17 @@ func (s *Server) pollBackendMetrics(ctx context.Context) {
 		return
 	}
 	metrics := parsePrometheusText(string(body))
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if len(metrics) == 0 {
+		return
+	}
+	now := s.createdAtValue(time.Now().UTC())
 	_ = retryDBWrite(func() error {
 		tx, err := s.db.Begin()
 		if err != nil {
 			return err
 		}
 		for name, value := range metrics {
-			if _, err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, s.cfg.DefaultBackend, name, value); err != nil {
+			if _, err := tx.Exec(s.rebind(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`), now, baseURL, name, value); err != nil {
 				_ = tx.Rollback()
 				return err
 			}
@@ -1554,10 +1779,9 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanRequest(s scanner) (RequestRecord, error) {
+func scanRequest(s scanner, isPostgres bool) (RequestRecord, error) {
 	var rec RequestRecord
 	var createdAt string
-	var streamInt int
 	var query sql.NullString
 	var clientIP sql.NullString
 	var backendURL sql.NullString
@@ -1566,6 +1790,16 @@ func scanRequest(s scanner) (RequestRecord, error) {
 	var requestRawPath sql.NullString
 	var responseRawPath sql.NullString
 	var userAgent sql.NullString
+
+	var streamVal any
+	if isPostgres {
+		var v bool
+		streamVal = &v
+	} else {
+		var v int
+		streamVal = &v
+	}
+
 	err := s.Scan(
 		&rec.ID,
 		&createdAt,
@@ -1575,7 +1809,7 @@ func scanRequest(s scanner) (RequestRecord, error) {
 		&clientIP,
 		&backendURL,
 		&model,
-		&streamInt,
+		streamVal,
 		&rec.StatusCode,
 		&errorText,
 		&rec.RequestBytes,
@@ -1609,7 +1843,15 @@ func scanRequest(s scanner) (RequestRecord, error) {
 	if err == nil {
 		rec.CreatedAt = t
 	}
-	rec.IsStreaming = streamInt == 1
+	if isPostgres {
+		if v, ok := streamVal.(*bool); ok {
+			rec.IsStreaming = *v
+		}
+	} else {
+		if v, ok := streamVal.(*int); ok {
+			rec.IsStreaming = *v == 1
+		}
+	}
 	if rec.CacheHitPct == 0 && rec.PromptTokens > 0 && rec.CachedPromptTokens > 0 {
 		rec.CacheHitPct = float64(rec.CachedPromptTokens) / float64(rec.PromptTokens) * 100
 	}

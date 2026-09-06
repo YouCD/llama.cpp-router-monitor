@@ -80,14 +80,21 @@ cd llama-cpp-router-monitor
 
 ### 2. Start it
 
-```bash
-docker compose up -d --build
+Create a `config.yaml` that points at your `llama.cpp` server:
+
+```yaml
+backends:
+  list:
+    - name: "backend-1"
+      url: "http://host.docker.internal:8080"
+      weight: 1
+      enabled: true
 ```
 
-That is enough if your `llama.cpp` server is already reachable at:
+Then:
 
-```text
-http://host.docker.internal:8080
+```bash
+docker compose up -d --build
 ```
 
 ### 3. Open the UI
@@ -105,16 +112,22 @@ Instead of sending requests directly to `llama.cpp`:
 
 ## Minimal Configuration
 
-If your backend is not on `http://host.docker.internal:8080`, create a `.env` file:
+Backends are defined in `backends.list` (see [YAML Configuration](#yaml-configuration)). Minimal `config.yaml`:
 
-```bash
-cp .env.example .env
-```
+```yaml
+server:
+  listen_addr: ":9091"
+  data_dir: "./data"
 
-Then set:
+database:
+  type: "sqlite"
 
-```env
-DEFAULT_BACKEND_URL=http://host.docker.internal:8080
+backends:
+  list:
+    - name: "backend-1"
+      url: "http://host.docker.internal:8080"
+      weight: 1
+      enabled: true
 ```
 
 ## Windows Autostart
@@ -159,9 +172,9 @@ This project is designed for local use.
 
 ## Dynamic Backend Override
 
-By default, requests go to `DEFAULT_BACKEND_URL`.
+Requests are routed to backends defined in `backends.list` (weighted load balancing).
 
-You can override the backend per request with:
+You can override the backend per request (requires `allow_dynamic: true`) with:
 
 - header:
 
@@ -231,7 +244,6 @@ curl http://localhost:9091/v1/chat/completions \
 Main environment variables:
 
 - `LISTEN_ADDR`
-- `DEFAULT_BACKEND_URL`
 - `ALLOW_DYNAMIC_BACKEND`
 - `RETENTION_DAYS`
 - `MAX_REQUEST_BYTES`
@@ -241,7 +253,109 @@ Main environment variables:
 - `POLL_INTERVAL_SECONDS`
 - `DATA_DIR`
 
+Backends are configured via `backends.list` in the YAML file.
+
 See [`.env.example`](./.env.example) for defaults.
+
+### YAML Configuration
+
+The monitor supports a YAML configuration file with environment variable overrides.
+
+Set `CONFIG_PATH` (default `config.yaml`) to enable it.
+
+**Priority:** environment variables > YAML file > built-in defaults.
+
+```yaml
+server:
+  listen_addr: ":9091"
+  data_dir: "./data"
+
+database:
+  type: "sqlite"              # sqlite | postgresql
+  sqlite:
+    path: "monitor.db"
+  postgresql:
+    dsn: "postgres://user:pass@localhost:5432/monitor?sslmode=disable"
+
+backends:
+  allow_dynamic: true
+  strategy: "wrr"             # wrr | swrr | wr | rr | random
+  list:
+    - name: "gpu-1"
+      url: "http://gpu-server-1:8080"
+      weight: 50
+      enabled: true
+      model: "qwen"           # 后端实际部署的模型 ID，转发时自动重写请求体的 model
+      api_key: "secret-1"     # 该后端的 API Key，自动注入 Authorization: Bearer <key>
+    - name: "gpu-2"
+      url: "http://gpu-server-2:8080"
+      weight: 30
+      enabled: true
+      model: "deepseek"       # 后端实际部署的模型 ID
+      api_key: "secret-2"
+
+monitor:
+  retention_days: 14
+  max_request_bytes: 33554432
+  max_capture_bytes: 33554432
+  request_timeout_seconds: 600
+  poll_backend_metrics: true
+  poll_interval_seconds: 10
+```
+
+- [Quick Start](config.quickstart.yaml) - minimal configuration
+- [Full Example](config.example.yaml) - all available options
+
+### Environment Variables (Legacy)
+
+Environment variables remain fully supported. When both are present, environment variables override the YAML file:
+
+| YAML | Environment Variable | Default |
+|------|---------------------|---------|
+| `server.listen_addr` | `LISTEN_ADDR` | `:9091` |
+| `server.data_dir` | `DATA_DIR` | `./data` |
+| `backends.allow_dynamic` | `ALLOW_DYNAMIC_BACKEND` | `true` |
+| `monitor.retention_days` | `RETENTION_DAYS` | `14` |
+| `monitor.max_request_bytes` | `MAX_REQUEST_BYTES` | `33554432` |
+| `monitor.max_capture_bytes` | `MAX_CAPTURE_BYTES` | `33554432` |
+| `monitor.request_timeout_seconds` | `REQUEST_TIMEOUT_SECONDS` | `600` |
+| `monitor.poll_backend_metrics` | `POLL_BACKEND_METRICS` | `true` |
+| `monitor.poll_interval_seconds` | `POLL_INTERVAL_SECONDS` | `10` |
+
+### PostgreSQL Database
+
+The monitor uses SQLite by default. To use PostgreSQL, set env vars:
+
+```env
+DATABASE_TYPE=postgresql
+DATABASE_DSN=postgres://user:password@localhost:5432/monitor?sslmode=disable
+```
+
+or use the `database` section in the YAML file.
+
+On startup the monitor:
+- **auto-creates the database itself** if it does not exist (connects to the `postgres` maintenance database and runs `CREATE DATABASE`; the DB user needs `CREATEDB` privilege)
+- creates all tables and indexes automatically (`CREATE TABLE IF NOT EXISTS`)
+
+### Multi-Backend Load Balancing
+
+When `backends.list` is configured, requests are routed across enabled backends using a weighted strategy (using [`fufuok/balancer`](https://github.com/fufuok/balancer)):
+
+- `wrr` - weighted round robin (default)
+- `swrr` - smooth weighted round robin
+- `wr` - weighted random
+- `rr` - round robin
+- `random` - random
+
+Per-backend options:
+
+- `model` - the model ID the backend actually serves. When set, the proxy rewrites the `model` field in the request body to this value before forwarding. Example: backend `gpu-server-1` serves `qwen`, `gpu-server-2` serves `deepseek` - each request is rewritten to the model of the chosen backend.
+- `api_key` - the backend's API key. When set, the proxy injects `Authorization: Bearer <api_key>` on the request to that backend. Without it, the client's `Authorization` header passes through unchanged.
+
+Per-request overrides still take priority over the balancer:
+
+- header `X-Backend-URL: http://other-server:8080`
+- query parameter `?backend=http://other-server:8080`
 
 ## Resource Usage Notes
 

@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <meta name="description" content="Monitor and inspect all traffic going through your local llama.cpp server." />
-  <title>llama.cpp Router Monitor</title>
+  <meta name="description" content="Monitor and inspect all traffic going through your local llama.cpp server." data-i18n-content="meta-desc" />
+  <title data-i18n="app-title">llama.cpp Router Monitor</title>
   <link rel="icon" type="image/svg+xml" href="/_monitor/ui/favicon.svg" />
   <link rel="stylesheet" href="/_monitor/ui/styles.css" />
 </head>
@@ -19,28 +19,29 @@
   <div class="app-shell">
     <header class="hero panel">
       <div class="hero-copy">
-        <p class="eyebrow">llama.cpp observability</p>
-        <h1>llama.cpp Router Monitor</h1>
-        <p class="hero-text">A lightweight monitoring dashboard for local llama.cpp traffic.</p>
+        <p class="eyebrow" data-i18n="eyebrow">llama.cpp observability</p>
+        <h1 data-i18n="app-title">llama.cpp Router Monitor</h1>
+        <p class="hero-text" data-i18n="hero-text">A lightweight monitoring dashboard for local llama.cpp traffic.</p>
       </div>
 
       <div class="hero-side">
         <div class="top-rail">
           <div class="metric-mode-toggle" role="group" aria-label="Summary view">
-            <button id="btnMetricsCards" class="btn btn-secondary toggle-btn is-active" type="button">Cards</button>
-            <button id="btnMetricsStrip" class="btn btn-secondary toggle-btn" type="button">Strip</button>
+            <button id="btnMetricsCards" class="btn btn-secondary toggle-btn is-active" type="button" data-i18n="cards">Cards</button>
+            <button id="btnMetricsStrip" class="btn btn-secondary toggle-btn" type="button" data-i18n="strip">Strip</button>
           </div>
+          <button id="btnLang" class="btn btn-secondary lang-btn" type="button">中文</button>
           <div class="refresh-cluster">
             <div class="live-indicator" id="liveState" data-state="pending">
               <span class="live-dot"></span>
-              <span id="liveStateText">Connecting</span>
+              <span id="liveStateText" data-i18n="connecting">Connecting</span>
             </div>
             <div class="refresh-meta">
-              <span class="refresh-label">Last update</span>
+              <span class="refresh-label" data-i18n="last-update">Last update</span>
               <strong id="lastUpdated">-</strong>
             </div>
-            <button id="refreshNow" class="btn btn-primary" type="button">Refresh</button>
-            <label class="toggle toggle-icon" title="Auto refresh" aria-label="Auto refresh">
+            <button id="refreshNow" class="btn btn-primary" type="button" data-i18n="refresh">Refresh</button>
+            <label class="toggle toggle-icon" title="Auto refresh" aria-label="Auto refresh" data-i18n-title="auto-refresh">
               <input id="autoRefresh" type="checkbox" checked />
               <span class="toggle-icon-mark" aria-hidden="true">
                 <svg viewBox="0 0 16 16" width="14" height="14" role="img" focusable="false">
@@ -55,75 +56,91 @@
 
     <section class="summary-grid" id="summaryGrid">
       <article class="metric-card panel accent-cyan">
-        <div class="metric-label">Active connections</div>
+        <div class="metric-label" data-i18n="metric.active-connections">Active connections</div>
         <div class="metric-value" id="activeConnections">0</div>
-        <div class="metric-foot">In flight</div>
+        <div class="metric-foot" data-i18n="metric-foot.in-flight">In flight</div>
       </article>
       <article class="metric-card panel accent-gold">
-        <div class="metric-label">Requests / hour</div>
+        <div class="metric-label" data-i18n="metric.requests-hour">Requests / hour</div>
         <div class="metric-value" id="requestsHour">0</div>
-        <div class="metric-foot">Rolling 1h</div>
+        <div class="metric-foot" data-i18n="metric-foot.rolling-1h">Rolling 1h</div>
       </article>
       <article class="metric-card panel accent-slate">
-        <div class="metric-label">Total requests</div>
+        <div class="metric-label" data-i18n="metric.total-requests">Total requests</div>
         <div class="metric-value" id="totalRequests">0</div>
-        <div class="metric-foot">Retained window</div>
+        <div class="metric-foot" data-i18n="metric-foot.retained-window">Retained window</div>
       </article>
       <article class="metric-card panel accent-green">
-        <div class="metric-label">Output / second</div>
+        <div class="metric-label" data-i18n="metric.output-sec">Output / second</div>
         <div class="metric-value" id="outputSec">0.0</div>
-        <div class="metric-foot">Shown rows</div>
+        <div class="metric-foot" data-i18n="metric-foot.shown-rows">Shown rows</div>
       </article>
       <article class="metric-card panel accent-cyan">
-        <div class="metric-label">Total tokens</div>
+        <div class="metric-label" data-i18n="metric.total-tokens">Total tokens</div>
         <div class="metric-value" id="totalTokens">0</div>
-        <div class="metric-foot">Retained window</div>
+        <div class="metric-foot" data-i18n="metric-foot.retained-window">Retained window</div>
       </article>
       <article class="metric-card panel accent-red">
-        <div class="metric-label">Average TTFT</div>
+        <div class="metric-label" data-i18n="metric.avg-ttft">Average TTFT</div>
         <div class="metric-value" id="avgTtft">0 ms</div>
-        <div class="metric-foot">First token</div>
+        <div class="metric-foot" data-i18n="metric-foot.first-token">First token</div>
       </article>
       <article class="metric-card panel accent-violet">
-        <div class="metric-label">Error rate</div>
+        <div class="metric-label" data-i18n="metric.error-rate">Error rate</div>
         <div class="metric-value" id="errorRate">0%</div>
-        <div class="metric-foot">4xx / 5xx</div>
+        <div class="metric-foot" data-i18n="metric-foot.4xx-5xx">4xx / 5xx</div>
       </article>
+    </section>
+
+    <section class="backend-stats panel" id="backendStatsSection">
+      <div class="panel-head compact-head">
+        <div>
+          <p class="panel-kicker" data-i18n="panel-kicker.by-backend">Per backend</p>
+          <h2 data-i18n="by-backend">By Backend</h2>
+        </div>
+      </div>
+      <div class="backend-stats-grid" id="backendStats"></div>
     </section>
 
     <section class="workspace">
       <section class="panel filter-panel">
         <div class="panel-head compact-head">
           <div>
-            <p class="panel-kicker">Filter requests</p>
-            <h2>Filters</h2>
+            <p class="panel-kicker" data-i18n="panel-kicker.filter-requests">Filter requests</p>
+            <h2 data-i18n="filters">Filters</h2>
           </div>
           <div class="head-actions">
-            <button id="btnToggleFilters" class="btn btn-secondary" type="button" aria-expanded="true">Collapse</button>
-            <button id="btnApply" class="btn btn-primary" type="button">Apply</button>
-            <button id="btnReset" class="btn btn-secondary" type="button">Reset</button>
+            <button id="btnToggleFilters" class="btn btn-secondary" type="button" aria-expanded="true" data-i18n="collapse">Collapse</button>
+            <button id="btnApply" class="btn btn-primary" type="button" data-i18n="apply">Apply</button>
+            <button id="btnReset" class="btn btn-secondary" type="button" data-i18n="reset">Reset</button>
           </div>
         </div>
 
         <div class="filter-body" id="filterBody">
         <div class="filter-grid">
           <label class="field">
-            <span>Search</span>
-            <input id="fQuery" type="text" placeholder="id, path, model, ip, error" />
+            <span data-i18n="filter.search">Search</span>
+            <input id="fQuery" type="text" placeholder="id, path, model, ip, error" data-i18n-placeholder="filter.search-placeholder" />
           </label>
           <label class="field">
-            <span>Path</span>
-            <input id="fPath" type="text" placeholder="/v1/chat/completions" />
+            <span data-i18n="filter.path">Path</span>
+            <input id="fPath" type="text" placeholder="/v1/chat/completions" data-i18n-placeholder="filter.path-placeholder" />
           </label>
           <label class="field">
-            <span>Model</span>
-            <input id="fModel" type="text" list="modelOptions" placeholder="Select or search a recorded model" />
+            <span data-i18n="filter.model">Model</span>
+            <input id="fModel" type="text" list="modelOptions" placeholder="Select or search a recorded model" data-i18n-placeholder="filter.model-placeholder" />
             <datalist id="modelOptions"></datalist>
           </label>
+          <label class="field">
+            <span data-i18n="filter.backend">Backend</span>
+            <select id="fBackend">
+              <option value="" data-i18n="any">Any</option>
+            </select>
+          </label>
           <label class="field small-field">
-            <span>Method</span>
+            <span data-i18n="filter.method">Method</span>
             <select id="fMethod">
-              <option value="">Any</option>
+              <option value="" data-i18n="any">Any</option>
               <option value="GET">GET</option>
               <option value="POST">POST</option>
               <option value="PUT">PUT</option>
@@ -132,32 +149,32 @@
             </select>
           </label>
           <label class="field small-field">
-            <span>Status</span>
+            <span data-i18n="filter.status">Status</span>
             <input id="fStatus" type="number" min="100" max="599" placeholder="200" />
           </label>
           <label class="field small-field">
-            <span>Since, hours</span>
+            <span data-i18n="filter.since">Since, hours</span>
             <input id="fSince" type="number" min="1" max="336" placeholder="24" />
           </label>
           <label class="field small-field">
-            <span>Stream</span>
+            <span data-i18n="filter.stream">Stream</span>
             <select id="fStream">
-              <option value="">Any</option>
-              <option value="true">Streaming</option>
-              <option value="false">Non-streaming</option>
+              <option value="" data-i18n="any">Any</option>
+              <option value="true" data-i18n="streaming">Streaming</option>
+              <option value="false" data-i18n="non-streaming">Non-streaming</option>
             </select>
           </label>
           <div class="quick-filters">
             <label class="field field-checkbox">
-              <span>Only failures</span>
+              <span data-i18n="filter.errors-only">Only failures</span>
               <input id="fErrorsOnly" type="checkbox" />
             </label>
             <label class="field field-checkbox">
-              <span>With tokens</span>
+              <span data-i18n="filter.with-tokens">With tokens</span>
               <input id="fWithTokens" type="checkbox" />
             </label>
             <label class="field field-checkbox">
-              <span>Chat completions only</span>
+              <span data-i18n="filter.chat-only">Chat completions only</span>
               <input id="fChatCompletions" type="checkbox" />
             </label>
           </div>
@@ -170,13 +187,13 @@
       <section class="panel table-panel">
         <div class="panel-head">
           <div>
-            <p class="panel-kicker">Live request stream</p>
-            <h2>Request Tape</h2>
+            <p class="panel-kicker" data-i18n="panel-kicker.live-stream">Live request stream</p>
+            <h2 data-i18n="request-tape">Request Tape</h2>
           </div>
           <div class="table-meta">
-            <span class="meta-chip"><strong id="resultsCount">0</strong> rows</span>
-            <span class="meta-chip"><strong id="resultsTotal">0</strong> total match</span>
-            <span class="meta-chip">Select row for detail</span>
+            <span class="meta-chip"><strong id="resultsCount">0</strong> <span data-i18n="rows">rows</span></span>
+            <span class="meta-chip"><strong id="resultsTotal">0</strong> <span data-i18n="total-match">total match</span></span>
+            <span class="meta-chip" data-i18n="select-row-detail">Select row for detail</span>
           </div>
         </div>
 
@@ -197,17 +214,17 @@
             </colgroup>
             <thead>
               <tr>
-                <th class="align-left">Time</th>
-                <th class="align-left">Request</th>
-                <th class="align-center">Status</th>
-                <th class="align-left">Model</th>
-                <th class="align-right">TTFT</th>
-                <th class="align-right">Total</th>
-                <th class="align-right">Prompt</th>
-                <th class="align-right">Completion</th>
-                <th class="align-right">Total tok</th>
-                <th class="align-right">Cache</th>
-                <th class="align-right">Prompt/s</th>
+                <th class="align-left" data-i18n="table.time">Time</th>
+                <th class="align-left" data-i18n="table.request">Request</th>
+                <th class="align-center" data-i18n="table.status">Status</th>
+                <th class="align-left" data-i18n="table.model">Model</th>
+                <th class="align-right" data-i18n="table.ttft">TTFT</th>
+                <th class="align-right" data-i18n="table.total">Total</th>
+                <th class="align-right" data-i18n="table.prompt">Prompt</th>
+                <th class="align-right" data-i18n="table.completion">Completion</th>
+                <th class="align-right" data-i18n="table.total-tok">Total tok</th>
+                <th class="align-right" data-i18n="table.cache">Cache</th>
+                <th class="align-right" data-i18n="table.prompt-s">Prompt/s</th>
               </tr>
             </thead>
             <tbody id="requestsBody"></tbody>
@@ -222,8 +239,8 @@
         </div>
 
         <div id="emptyState" class="empty-state" hidden>
-          <h3>No requests match the current filter</h3>
-          <p>Reset filters or wait for new traffic to arrive through the proxy.</p>
+          <h3 data-i18n="empty.title">No requests match the current filter</h3>
+          <p data-i18n="empty.desc">Reset filters or wait for new traffic to arrive through the proxy.</p>
         </div>
       </section>
     </section>
@@ -233,16 +250,16 @@
   <aside class="inspector panel" id="drawer" aria-hidden="true">
         <div class="panel-head inspector-head">
           <div>
-            <p class="panel-kicker">Request inspector</p>
-            <h2 id="drawerTitle">No selection</h2>
+            <p class="panel-kicker" data-i18n="panel-kicker.request-inspector">Request inspector</p>
+            <h2 id="drawerTitle" data-i18n="no-selection">No selection</h2>
           </div>
-          <button id="drawerClose" class="btn btn-secondary" type="button">Close</button>
+          <button id="drawerClose" class="btn btn-secondary" type="button" data-i18n="close">Close</button>
         </div>
 
         <section class="detail-hero panel">
           <div class="detail-hero-top">
             <div class="detail-model-wrap">
-              <div class="detail-model-label">Model</div>
+              <div class="detail-model-label" data-i18n="detail-model">Model</div>
               <div class="detail-model-name" id="detailModel">-</div>
             </div>
             <div class="detail-badges">
@@ -250,46 +267,46 @@
               <span class="detail-chip" id="detailStreamChip">-</span>
             </div>
           </div>
-          <div class="inspector-summary" id="drawerMeta">Choose a row to inspect request metadata and raw payloads.</div>
+          <div class="inspector-summary" id="drawerMeta" data-i18n="choose-row">Choose a row to inspect request metadata and raw payloads.</div>
         </section>
 
         <div class="stat-strip" id="drawerStats">
-          <div class="mini-stat"><span>Status</span><strong id="detailStatus">-</strong></div>
-          <div class="mini-stat"><span>TTFT</span><strong id="detailTtft">-</strong></div>
-          <div class="mini-stat"><span>Total</span><strong id="detailTotal">-</strong></div>
-          <div class="mini-stat"><span>Prompt/s</span><strong id="detailPromptRate">-</strong></div>
-          <div class="mini-stat"><span>Output/s</span><strong id="detailDecodeRate">-</strong></div>
-          <div class="mini-stat mini-stat-cyan"><span>Prompt tok</span><strong id="detailPromptTokens">-</strong></div>
-          <div class="mini-stat mini-stat-slate"><span>Cached tok</span><strong id="detailCachedPromptTokens">-</strong></div>
-          <div class="mini-stat mini-stat-gold"><span>Cache hit</span><strong id="detailCacheHitPct">-</strong></div>
-          <div class="mini-stat mini-stat-gold"><span>Output tok</span><strong id="detailCompletionTokens">-</strong></div>
-          <div class="mini-stat mini-stat-green"><span>Total tok</span><strong id="detailTotalTokens">-</strong></div>
-          <div class="mini-stat mini-stat-violet"><span>Request</span><strong id="detailRequestBytes">-</strong></div>
-          <div class="mini-stat mini-stat-slate"><span>Response</span><strong id="detailResponseBytes">-</strong></div>
+          <div class="mini-stat"><span data-i18n="mini.status">Status</span><strong id="detailStatus">-</strong></div>
+          <div class="mini-stat"><span data-i18n="mini.ttft">TTFT</span><strong id="detailTtft">-</strong></div>
+          <div class="mini-stat"><span data-i18n="mini.total">Total</span><strong id="detailTotal">-</strong></div>
+          <div class="mini-stat"><span data-i18n="mini.prompt-s">Prompt/s</span><strong id="detailPromptRate">-</strong></div>
+          <div class="mini-stat"><span data-i18n="mini.output-s">Output/s</span><strong id="detailDecodeRate">-</strong></div>
+          <div class="mini-stat mini-stat-cyan"><span data-i18n="mini.prompt-tok">Prompt tok</span><strong id="detailPromptTokens">-</strong></div>
+          <div class="mini-stat mini-stat-slate"><span data-i18n="mini.cached-tok">Cached tok</span><strong id="detailCachedPromptTokens">-</strong></div>
+          <div class="mini-stat mini-stat-gold"><span data-i18n="mini.cache-hit">Cache hit</span><strong id="detailCacheHitPct">-</strong></div>
+          <div class="mini-stat mini-stat-gold"><span data-i18n="mini.output-tok">Output tok</span><strong id="detailCompletionTokens">-</strong></div>
+          <div class="mini-stat mini-stat-green"><span data-i18n="mini.total-tok">Total tok</span><strong id="detailTotalTokens">-</strong></div>
+          <div class="mini-stat mini-stat-violet"><span data-i18n="mini.request">Request</span><strong id="detailRequestBytes">-</strong></div>
+          <div class="mini-stat mini-stat-slate"><span data-i18n="mini.response">Response</span><strong id="detailResponseBytes">-</strong></div>
         </div>
 
         <section class="detail-grid panel">
-          <div class="detail-row"><span>Request ID</span><strong id="detailId">-</strong></div>
-          <div class="detail-row"><span>Backend</span><strong id="detailBackend">-</strong></div>
-          <div class="detail-row"><span>Client</span><strong id="detailClient">-</strong></div>
-          <div class="detail-row"><span>Date / Time</span><strong id="detailTime">-</strong></div>
-          <div class="detail-row"><span>Path</span><strong id="detailPath">-</strong></div>
-          <div class="detail-row"><span>Query</span><strong id="detailQuery">-</strong></div>
-          <div class="detail-row detail-row-wide" id="detailErrorRow" hidden><span>Error</span><strong id="detailError">-</strong></div>
+          <div class="detail-row"><span data-i18n="detail.request-id">Request ID</span><strong id="detailId">-</strong></div>
+          <div class="detail-row"><span data-i18n="detail.backend">Backend</span><strong id="detailBackend">-</strong></div>
+          <div class="detail-row"><span data-i18n="detail.client">Client</span><strong id="detailClient">-</strong></div>
+          <div class="detail-row"><span data-i18n="detail.date-time">Date / Time</span><strong id="detailTime">-</strong></div>
+          <div class="detail-row"><span data-i18n="detail.path">Path</span><strong id="detailPath">-</strong></div>
+          <div class="detail-row"><span data-i18n="detail.query">Query</span><strong id="detailQuery">-</strong></div>
+          <div class="detail-row detail-row-wide" id="detailErrorRow" hidden><span data-i18n="detail.error">Error</span><strong id="detailError">-</strong></div>
         </section>
 
         <div class="tabbar">
-          <button data-tab="request" class="tab active" type="button">Raw request</button>
-          <button data-tab="structured" class="tab" type="button">Structured response</button>
-          <button data-tab="response" class="tab" type="button">Raw response</button>
+          <button data-tab="request" class="tab active" type="button" data-i18n="tab.raw-request">Raw request</button>
+          <button data-tab="structured" class="tab" type="button" data-i18n="tab.structured-response">Structured response</button>
+          <button data-tab="response" class="tab" type="button" data-i18n="tab.raw-response">Raw response</button>
         </div>
 
-        <pre id="rawRequest" class="raw active">No request selected.</pre>
-        <pre id="structuredResponse" class="raw">No request selected.</pre>
-        <pre id="rawResponse" class="raw">No request selected.</pre>
+        <pre id="rawRequest" class="raw active" data-i18n="no-request-selected">No request selected.</pre>
+        <pre id="structuredResponse" class="raw" data-i18n="no-request-selected">No request selected.</pre>
+        <pre id="rawResponse" class="raw" data-i18n="no-request-selected">No request selected.</pre>
 
         <div class="inspector-footer">
-          <button id="drawerDelete" class="btn btn-danger" type="button" disabled>Delete Request</button>
+          <button id="drawerDelete" class="btn btn-danger" type="button" disabled data-i18n="delete-request">Delete Request</button>
         </div>
   </aside>
 

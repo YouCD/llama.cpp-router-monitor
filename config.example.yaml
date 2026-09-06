@@ -1,0 +1,44 @@
+# llama.cpp Router Monitor 配置文件
+
+server:
+  listen_addr: ":9091"
+  data_dir: "./data"
+
+database:
+  type: "sqlite"  # sqlite 或 postgresql
+  sqlite:
+    path: "monitor.db"
+  postgresql:
+    dsn: "postgres://user:password@localhost:5432/monitor?sslmode=disable"
+    max_open_conns: 25
+    max_idle_conns: 5
+    conn_max_lifetime_seconds: 300
+
+backends:
+  allow_dynamic: true
+  strategy: "wrr"  # wrr, swrr, wr, rr, random
+  list:
+    - name: "gpu-server-1"
+      url: "http://gpu-server-1:8080"
+      weight: 50
+      enabled: true
+      model: "qwen"          # 该后端实际部署的模型 ID，转发时自动重写请求体的 model 字段
+      api_key: "secret-1"    # 该后端的 API Key，转发时自动注入 Authorization: Bearer <key>
+    - name: "gpu-server-2"
+      url: "http://gpu-server-2:8080"
+      weight: 30
+      enabled: true
+      model: "deepseek"      # 该后端实际部署的模型 ID
+      api_key: "secret-2"    # 该后端的 API Key
+    - name: "cpu-server"
+      url: "http://cpu-server:8080"
+      weight: 20
+      enabled: true
+
+monitor:
+  retention_days: 14
+  max_request_bytes: 33554432  # 32MB
+  max_capture_bytes: 33554432  # 32MB
+  request_timeout_seconds: 600
+  poll_backend_metrics: true
+  poll_interval_seconds: 10

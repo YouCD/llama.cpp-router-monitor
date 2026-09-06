@@ -183,6 +183,107 @@ select {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.lang-btn {
+  min-width: 44px;
+}
+
+.backend-stats {
+  margin-bottom: 16px;
+}
+
+.backend-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.backend-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.backend-card:hover {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.backend-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.backend-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backend-err {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.backend-err.tone-good {
+  color: var(--ok, #22c55e);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.backend-err.tone-hot {
+  color: var(--warn, #f59e0b);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.backend-err.tone-critical {
+  color: var(--bad, #ef4444);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.backend-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.backend-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backend-metric span {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted, var(--text));
+  opacity: 0.7;
+}
+
+.backend-metric strong {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.backend-empty {
+  padding: 20px;
+  color: var(--text-muted, var(--text));
+  opacity: 0.7;
+  font-size: 13px;
+}
+
 .refresh-meta {
   display: flex;
   flex-direction: column;
