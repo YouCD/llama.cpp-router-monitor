@@ -110,7 +110,6 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Delete } from '@element-plus/icons-vue'
 import { t } from '../i18n'
 import { fetchRaw, deleteRequest } from '../api'

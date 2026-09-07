@@ -34,8 +34,8 @@ export function fmtMsCompact(value) {
 }
 
 export function fmtLatency(ttft, total, liveText) {
-  const t = fmtMsCompact(ttft)
-  let r = fmtMsCompact(total)
+  const t = fmtDuration(ttft)
+  let r = fmtDuration(total)
   if (r === '-' && liveText) r = String(liveText)
   if (t === '-' && r === '-') return '-'
   return `${t} / ${r}`
@@ -105,8 +105,14 @@ export function fmtDateTime(value) {
 
 export function fmtDuration(value) {
   if (!Number.isFinite(value) || value <= 0) return '-'
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}s`
-  return `${Math.round(value)}ms`
+  if (value < 1000) return `${Math.round(value)}ms`
+  const totalSec = value / 1000
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (h > 0) return `${h}h${m}m`
+  return `${m}m${s.toFixed(0)}s`
 }
 
 const STATUS_TEXT = {

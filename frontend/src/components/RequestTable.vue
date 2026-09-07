@@ -94,7 +94,6 @@
 <script setup>
 import { computed } from 'vue'
 import { CopyDocument, View } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
 import { t } from '../i18n'
 import {
   fmtTime, fmtNum, fmtRate, fmtPercent, fmtLatency, fmtTokens, shortQuery,
