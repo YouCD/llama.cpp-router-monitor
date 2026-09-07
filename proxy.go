@@ -9,12 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/youcd/toolkit/log"
 )
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +30,8 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := newID()
 	clientIP := getClientIP(r)
+	// 创建带 request_id 的请求上下文，日志可按 request_id 串联整个请求生命周期。
+	ctx := s.newInflightCtx(r.Context(), requestID)
 	backendURL, trimmedQuery, backendCfg, err := s.selectBackend(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -57,9 +60,11 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			model = newModel
 		}
 	}
+	log.WithCtx(ctx).Infof("request received: id=%s method=%s path=%s client=%s backend=%s model=%s stream=%v",
+		requestID, r.Method, r.URL.Path, clientIP, backendURL, model, isStreaming)
 	reqRawPath, err := s.saveRawPayload(requestID, "request", requestBody)
 	if err != nil {
-		log.Printf("save request raw failed: %v", err)
+		log.WithCtx(ctx).Infof("save request raw failed: %v", err)
 	}
 
 	if err := s.insertRequest(RequestRecord{
@@ -76,7 +81,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		RequestRawPath: reqRawPath,
 		UserAgent:      r.UserAgent(),
 	}); err != nil {
-		log.Printf("insert request failed: %v", err)
+		log.WithCtx(ctx).Infof("insert request failed: %v", err)
 	}
 
 	target := backendURL + buildProxyPath(backendURL, r.URL.Path)
@@ -84,7 +89,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		target += "?" + trimmedQuery
 	}
 
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(requestBody))
+	outReq, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(requestBody))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -134,13 +139,13 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		copied, firstByteMs, err = streamCopy(w, resp.Body, capturer, started)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("copy response failed req=%s: %v", requestID, err)
+		log.WithCtx(ctx).Infof("copy response failed req=%s: %v", requestID, err)
 	}
 
 	respBytes := capturer.Bytes()
 	respRawPath, saveErr := s.saveRawPayload(requestID, "response", respBytes)
 	if saveErr != nil {
-		log.Printf("save response raw failed: %v", saveErr)
+		log.WithCtx(ctx).Infof("save response raw failed: %v", saveErr)
 	}
 
 	meta := parseResponseMeta(resp.Header, respBytes)
@@ -170,7 +175,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		ChunksCount:        chunks,
 		ResponseRawPath:    respRawPath,
 	}); err != nil {
-		log.Printf("finish request failed: %v", err)
+		log.WithCtx(ctx).Infof("finish request failed: %v", err)
 	}
 
 	s.hub.Broadcast(map[string]any{

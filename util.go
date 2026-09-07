@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,44 @@ import (
 
 func (s *Server) rebind(q string) string {
 	return s.db.Rebind(q)
+}
+
+// newInflightCtx 返回一个带 request_id 的请求上下文，供 log.WithCtx 提取，
+// 以便一个请求从接收到结束的所有日志能按 request_id 串联。
+func (s *Server) newInflightCtx(parent context.Context, requestID string) context.Context {
+	return context.WithValue(parent, "request_id", requestID)
+}
+
+// newSSECtx 为 SSE 长连接创建可统一取消的上下文，优雅起停时能立即断开监控连接。
+func (s *Server) newSSECtx(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	s.sseMu.Lock()
+	if s.sseCancels == nil {
+		s.sseCancels = make(map[context.Context]context.CancelFunc)
+	}
+	s.sseCancels[ctx] = cancel
+	s.sseMu.Unlock()
+
+	return ctx, func() {
+		cancel()
+		s.sseMu.Lock()
+		delete(s.sseCancels, ctx)
+		s.sseMu.Unlock()
+	}
+}
+
+// cancelAllSSE 取消所有 SSE 长连接，用于优雅起停时避免 Shutdown 傻等监控连接。
+func (s *Server) cancelAllSSE() {
+	s.sseMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(s.sseCancels))
+	for _, c := range s.sseCancels {
+		cancels = append(cancels, c)
+	}
+	s.sseMu.Unlock()
+
+	for _, c := range cancels {
+		c()
+	}
 }
 
 func (s *Server) isPostgres() bool {

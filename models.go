@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -28,6 +30,9 @@ type Server struct {
 	client   *http.Client
 	hub      *EventHub
 	active   atomic.Int64
+
+	sseMu    sync.Mutex
+	sseCancels map[context.Context]context.CancelFunc
 }
 type RequestRecord struct {
 	ID                 string    `json:"id"`

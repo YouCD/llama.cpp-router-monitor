@@ -6,12 +6,13 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/youcd/toolkit/log"
 )
 
 func (s *Server) saveRawPayload(requestID string, kind string, data []byte) (string, error) {
@@ -637,19 +638,19 @@ func (s *Server) cleanup() {
 		_, err := s.db.Exec(s.rebind(`DELETE FROM requests WHERE created_at < ?`), cutoffVal)
 		return err
 	}); err != nil {
-		log.Printf("cleanup requests failed: %v", err)
+		log.WithCtx(context.Background()).Infof("cleanup requests failed: %v", err)
 	}
 	if err := retryDBWrite(func() error {
 		_, err := s.db.Exec(s.rebind(`DELETE FROM backend_metrics WHERE created_at < ?`), cutoffVal)
 		return err
 	}); err != nil {
-		log.Printf("cleanup backend_metrics failed: %v", err)
+		log.WithCtx(context.Background()).Infof("cleanup backend_metrics failed: %v", err)
 	}
 
 	rawRoot := filepath.Join(s.cfg.DataDir, "raw")
 	entries, err := os.ReadDir(rawRoot)
 	if err != nil && !os.IsNotExist(err) {
-		log.Printf("cleanup raw read failed: %v", err)
+		log.WithCtx(context.Background()).Infof("cleanup raw read failed: %v", err)
 		return
 	}
 	cutoffDate := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays)

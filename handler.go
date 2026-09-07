@@ -215,7 +215,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
-	ctx := r.Context()
+	ctx, cancelSSE := s.newSSECtx(r.Context())
+	defer cancelSSE()
 	for {
 		select {
 		case <-ctx.Done():

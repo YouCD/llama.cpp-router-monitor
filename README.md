@@ -138,7 +138,7 @@ docker run -d --name llama-cpp-router-monitor \
 ```
 
 > The image is built with the frontend embedded — no separate `web/` needed.
-> The binary inside the image is `/app/llama_proxy`.
+> The binary inside the image is `/app/`.
 
 ### 2. Configure backends
 

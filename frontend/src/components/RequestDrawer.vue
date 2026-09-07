@@ -117,7 +117,7 @@ import { fetchRaw, deleteRequest } from '../api'
 import {
   fmtNum, fmtBytes, fmtRate, fmtPctNum, fmtDateTime, fmtDuration,
   isCompleted, statusClass, statusLabel as _statusLabel,
-  shortenBackendUrl, shortenId, highlightJSON, methodClass,
+  shortenBackendUrl, shortenId, highlightJSON, methodClass, copyText,
 } from '../utils'
 
 const props = defineProps({
@@ -201,19 +201,21 @@ async function onCopy() {
     lines.push(`  --data-raw '${esc(body)}'`)
   }
   try {
-    await navigator.clipboard.writeText(lines.join(' \\\n'))
-    ElMessage.success(t('copied'))
+    const ok = await copyText(lines.join(' \\\n'))
+    if (ok) ElMessage.success(t('copied'))
+    else ElMessage.warning(t('copyFailed'))
   } catch {
-    /* clipboard unavailable */
+    ElMessage.warning(t('copyFailed'))
   }
 }
 
 async function copyJson(text) {
   try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success(t('copied'))
+    const ok = await copyText(text)
+    if (ok) ElMessage.success(t('copied'))
+    else ElMessage.warning(t('copyFailed'))
   } catch {
-    /* clipboard unavailable */
+    ElMessage.warning(t('copyFailed'))
   }
 }
 

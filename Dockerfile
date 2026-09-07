@@ -12,12 +12,12 @@ COPY go.mod go.sum ./
 RUN GOPROXY=${GOPROXY} go mod download
 COPY . .
 COPY --from=frontend /build/web ./web
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embedweb -trimpath -ldflags "-s -w" -o /out/llama_proxy .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embedweb -trimpath -ldflags "-s -w" -o /out/ .
 
 FROM alpine:3.21
 RUN adduser -D -H -u 10001 app && mkdir -p /app/data && chown -R app:app /app
 USER app
 WORKDIR /app
-COPY --from=build /out/llama_proxy /app/llama_proxy
+COPY --from=build /out/ /app/
 EXPOSE 9091
-ENTRYPOINT ["/app/llama_proxy"]
+ENTRYPOINT ["/app/"]

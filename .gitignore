@@ -15,3 +15,4 @@ web/
 Thumbs.db
 config.yaml
 .idea
+llama-cpp-router-monitor
