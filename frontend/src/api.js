@@ -1,0 +1,62 @@
+async function fetchJSON(url, options) {
+  const resp = await fetch(url, options)
+  if (!resp.ok) {
+    throw new Error(await resp.text())
+  }
+  return resp.json()
+}
+
+export function queryString(obj) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, value)
+    }
+  }
+  return params.toString()
+}
+
+export async function fetchStats(filters) {
+  const hours = Number.parseInt(filters.since_hours || '1', 10) || 1
+  return fetchJSON(`/_monitor/stats?${queryString({ hours, ...filters })}`)
+}
+
+export async function fetchRequests(limit, offset, filters) {
+  return fetchJSON(`/_monitor/requests?${queryString({ limit, offset, ...filters })}`)
+}
+
+export async function fetchRequest(id) {
+  return fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`)
+}
+
+export async function deleteRequest(id) {
+  return fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function fetchRaw(id, part) {
+  const resp = await fetch(`/_monitor/raw/${encodeURIComponent(id)}/${part}`)
+  if (!resp.ok) {
+    return null
+  }
+  const text = await resp.text()
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
+}
+
+export async function fetchModels() {
+  const data = await fetchJSON('/_monitor/models')
+  return Array.isArray(data.items) ? data.items : []
+}
+
+export async function fetchBackends() {
+  const data = await fetchJSON('/_monitor/backends')
+  return Array.isArray(data.items) ? data.items : []
+}
+
+export async function fetchStatsByBackend(hours) {
+  const data = await fetchJSON(`/_monitor/stats-by-backend?${queryString({ hours })}`)
+  return Array.isArray(data.items) ? data.items : []
+}

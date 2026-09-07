@@ -6,6 +6,10 @@ bin/
 dist/
 coverage.out
 
+# Frontend
+frontend/node_modules/
+web/
+
 # OS / editor
 .DS_Store
 Thumbs.db

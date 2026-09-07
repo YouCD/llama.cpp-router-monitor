@@ -496,21 +496,6 @@ func (s *Server) handleRaw(w http.ResponseWriter, p string) {
 	_, _ = w.Write(data)
 }
 
-func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
-	rel := strings.TrimPrefix(p, "/ui")
-	w.Header().Set("Cache-Control", "no-cache")
-	if rel == "" || rel == "/" {
-		http.ServeFile(w, r, filepath.Join("web", "index.html"))
-		return
-	}
-	clean := filepath.Clean(strings.TrimPrefix(rel, "/"))
-	if strings.Contains(clean, "..") {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
-		return
-	}
-	http.ServeFile(w, r, filepath.Join("web", clean))
-}
-
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
