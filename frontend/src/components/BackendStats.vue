@@ -1,17 +1,26 @@
 <template>
   <div class="panel">
     <div class="section-title">{{ t('byBackend') }}</div>
-    <div class="backend-grid" v-if="items.length">
-      <div class="backend-card" v-for="b in items" :key="b.backend_url" @click="$emit('select', b.backend_url)">
-        <div class="head">
-          <span class="name" :title="b.backend_url">{{ shorten(b.backend_url) }}</span>
-          <span class="err-rate" :class="errClass(b.error_rate)">{{ fmtPercent(b.error_rate || 0) }}</span>
+    <div class="backend-list" v-if="items.length">
+      <div class="backend-bar" v-for="b in bars" :key="b.url" @click="$emit('select', b.url)">
+        <span class="backend-dot" :class="b.dot" :title="b.dotTitle"></span>
+        <span class="backend-name" :title="b.url">{{ b.name }}</span>
+
+        <div class="backend-load">
+          <div class="load-track">
+            <div class="load-fill" :class="b.loadTone" :style="{ width: b.loadPct + '%' }"></div>
+          </div>
+          <span class="load-label">{{ t('backendRequests') }} {{ fmtNum(b.requests) }}</span>
         </div>
-        <div class="metrics">
-          <div class="metric"><span>{{ t('rows') }}</span><strong>{{ fmtNum(b.requests || 0) }}</strong></div>
-          <div class="metric"><span>{{ t('colTotalTok') }}</span><strong>{{ fmtNum(b.total_tokens || 0) }}</strong></div>
-          <div class="metric"><span>{{ t('colTtft') }}</span><strong>{{ fmtMs(b.avg_first_byte_ms || 0) }}</strong></div>
-          <div class="metric"><span>{{ t('colTotal') }}</span><strong>{{ fmtMs(b.avg_total_ms || 0) }}</strong></div>
+
+        <div class="backend-metrics">
+          <span class="metric-cell" :title="t('colTtft')"><strong class="mono">{{ fmtMsCompact(b.avgFirstByte) }}</strong> TTFT</span>
+          <span class="metric-cell" :title="t('tokPerSec')"><strong class="mono">{{ b.tps.toFixed(1) }}</strong> Token/s</span>
+          <el-tooltip :content="t('backendErrTip', { n: fmtPercent(b.errorRate) })" placement="top">
+            <span class="metric-cell" :title="t('metricErrorRate')">
+              <strong class="mono" :class="b.errTone">{{ fmtPercent(b.errorRate) }}</strong>
+            </span>
+          </el-tooltip>
         </div>
       </div>
     </div>
@@ -20,17 +29,51 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { t } from '../i18n'
-import { fmtNum, fmtPercent, fmtMs, shortenBackendUrl as shorten } from '../utils'
+import {
+  fmtNum, fmtPercent, fmtMsCompact,
+  shortenBackendUrl as shorten,
+} from '../utils'
 
-defineProps({
+const props = defineProps({
   items: { type: Array, default: () => [] },
+  hours: { type: Number, default: 1 },
 })
 defineEmits(['select'])
 
-function errClass(rate) {
-  if (rate >= 0.5) return 'tone-critical'
-  if (rate > 0) return 'tone-hot'
-  return 'tone-good'
-}
+const bars = computed(() => {
+  const list = props.items || []
+  const maxReqs = Math.max(1, ...list.map((b) => b.requests || 0))
+  const secs = (props.hours || 1) * 3600
+  return list.map((b) => {
+    const requests = b.requests || 0
+    const errorRate = b.error_rate || 0
+    const tps = secs > 0 ? (b.total_tokens || 0) / secs : 0
+    const pct = Math.max(4, Math.round((requests / maxReqs) * 100))
+    const dot = errorRate > 0 ? 'dot-warn' : 'dot-ok'
+    const dotTitle = errorRate > 0
+      ? t('backendErrTip', { n: fmtPercent(errorRate) })
+      : t('backendHealthy')
+    const errTone = errorRate > 0 ? 'tone-warm' : 'tone-good'
+    let loadTone = 'fill-low'
+    if (list.length > 1) {
+      if (pct > 80) loadTone = 'fill-high'
+      else if (pct > 50) loadTone = 'fill-mid'
+    }
+    return {
+      url: b.backend_url,
+      name: shorten(b.backend_url),
+      requests,
+      errorRate,
+      avgFirstByte: b.avg_first_byte_ms || 0,
+      tps,
+      dot,
+      dotTitle,
+      errTone,
+      loadTone,
+      loadPct: pct,
+    }
+  })
+})
 </script>

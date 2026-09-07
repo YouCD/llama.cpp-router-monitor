@@ -36,6 +36,8 @@ type Config struct {
 	RequestTimeout      time.Duration
 	PollBackendMetrics  bool
 	PollInterval        time.Duration
+	IgnorePaths         []string
+	RecordPaths         []string
 }
 
 func loadConfig() Config {
@@ -49,6 +51,8 @@ func loadConfig() Config {
 		RequestTimeout:      time.Duration(getEnvInt("REQUEST_TIMEOUT_SECONDS", 600)) * time.Second,
 		PollBackendMetrics:  getEnvBool("POLL_BACKEND_METRICS", true),
 		PollInterval:        time.Duration(getEnvInt("POLL_INTERVAL_SECONDS", 10)) * time.Second,
+		IgnorePaths:         getEnvList("IGNORE_PATHS", []string{"/favicon.ico", "/backend-metrics", "/metrics", "/.well-known"}),
+		RecordPaths:         getEnvList("RECORD_PATHS", nil),
 	}
 }
 
@@ -530,6 +534,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.shouldRecordProxy(r.URL.Path) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
 	started := time.Now()
 	requestID := newID()
 	clientIP := getClientIP(r)
@@ -697,6 +705,39 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		"backend_url":          backendURL,
 		"active_connections":   s.active.Load(),
 	})
+}
+
+func (s *Server) pathMatches(path string, list []string) bool {
+	p := strings.Trim(path, "/")
+	if p == "" {
+		return false
+	}
+	for _, ig := range list {
+		raw := strings.Trim(ig, "/")
+		if raw == "" {
+			continue
+		}
+		if p == raw || strings.HasPrefix(p, raw+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) isIgnoredPath(path string) bool {
+	return s.pathMatches(path, s.cfg.IgnorePaths)
+}
+
+// shouldRecordProxy 决定某个路径的请求是否需要转发并记录。
+// 白名单 record_paths 非空时，仅命中白名单的路径会被转发记录；其余返回 404。
+func (s *Server) shouldRecordProxy(path string) bool {
+	if s.isIgnoredPath(path) {
+		return false
+	}
+	if len(s.cfg.RecordPaths) > 0 {
+		return s.pathMatches(path, s.cfg.RecordPaths)
+	}
+	return true
 }
 
 func (s *Server) selectBackend(r *http.Request) (backend string, query string, bc *BackendConfig, err error) {
@@ -2023,6 +2064,24 @@ func getEnvBool(name string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func getEnvList(name string, fallback []string) []string {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }
 
 func getQueryInt(r *http.Request, name string, fallback int) int {

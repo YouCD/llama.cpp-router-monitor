@@ -110,6 +110,82 @@ Instead of sending requests directly to `llama.cpp`:
 - old: `http://localhost:8080`
 - new: `http://localhost:9091`
 
+## Use a Pre-built Docker Image (GitHub Container Registry)
+
+Every push to `main` and every `v*` tag triggers an automatic build that pushes
+a multi-arch image to **GHCR** (`ghcr.io/<owner>/llama.cpp-router-monitor`).
+
+Available tags:
+
+| Tag            | Description                              |
+|----------------|------------------------------------------|
+| `next`         | Latest build of the `main` branch        |
+| `sha-<commit>` | Exact build for a specific commit        |
+| `1.2.3`, `1.2` | Versioned releases (from `v1.2.3` tags)  |
+| `latest`       | Same as the most recent release `v*` tag |
+
+### 1. Pull and run
+
+```bash
+docker pull ghcr.io/<owner>/llama.cpp-router-monitor:next
+
+docker run -d --name llama-cpp-router-monitor \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/data:/app/data \
+  -p 9091:9091 \
+  --restart unless-stopped \
+  ghcr.io/<owner>/llama.cpp-router-monitor:next
+```
+
+> The image is built with the frontend embedded — no separate `web/` needed.
+> The binary inside the image is `/app/llama_proxy`.
+
+### 2. Configure backends
+
+Point the proxy at your `llama.cpp` server in `config.yaml`. When running on the
+host from a container, use `host.docker.internal`:
+
+```yaml
+backends:
+  list:
+    - name: "backend-1"
+      url: "http://host.docker.internal:8080"
+      weight: 1
+      enabled: true
+```
+
+### 3. Open the UI
+
+```text
+http://localhost:9091/_monitor/ui
+```
+
+> The GHCR package is **private** by default after the first build. To pull it
+> from other machines, open the package settings on GitHub and set it to **Public**,
+> or authenticate with `docker login ghcr.io` using a token that has `read:packages`.
+
+## Build the Image Yourself
+
+Prefer building from source? The Dockerfile is multi-stage and self-contained
+(it builds the frontend and compiles an embedded binary):
+
+```bash
+# with docker compose
+docker compose up -d --build
+
+# or directly
+docker build -t llama-cpp-router-monitor .
+```
+
+> In China, builds may fail fetching Go modules / npm packages due to network.
+> To use a China mirror, pass build args (works with `docker compose build` too):
+
+```bash
+docker build \
+  --build-arg GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct \
+  -t llama-cpp-router-monitor .
+```
+
 ## Minimal Configuration
 
 Backends are defined in `backends.list` (see [YAML Configuration](#yaml-configuration)). Minimal `config.yaml`:

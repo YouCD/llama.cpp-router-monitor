@@ -3,6 +3,29 @@ export function fmtMs(value) {
   return `${Math.round(value)} ms`
 }
 
+export function fmtMsCompact(value) {
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  return `${Math.round(value)}ms`
+}
+
+export function fmtLatency(ttft, total, liveText) {
+  const t = fmtMsCompact(ttft)
+  let r = fmtMsCompact(total)
+  if (r === '-' && liveText) r = String(liveText)
+  if (t === '-' && r === '-') return '-'
+  return `${t} / ${r}`
+}
+
+export function fmtTokens(prompt, completion) {
+  return `${fmtNum(prompt)} / ${fmtNum(completion)}`
+}
+
+export function shortQuery(query, max = 40) {
+  const q = String(query || '').trim()
+  if (!q) return ''
+  return q.length > max ? q.slice(0, max) + '…' : q
+}
+
 export function fmtRate(value) {
   if (!Number.isFinite(value) || value <= 0) return '-'
   return value.toFixed(value >= 100 ? 0 : 1)
@@ -16,6 +39,13 @@ export function fmtNum(value) {
 export function fmtPercent(value) {
   if (!Number.isFinite(value)) return '0%'
   return `${(value * 100).toFixed(2)}%`
+}
+
+export function fmtPctNum(value) {
+  if (!Number.isFinite(value)) return '0%'
+  const n = Math.round(value * 100) / 100
+  if (Number.isInteger(n)) return `${n}%`
+  return `${n.toFixed(2)}%`
 }
 
 export function fmtBytes(value) {
@@ -44,10 +74,82 @@ export function fmtDate(value) {
 export function fmtDateTime(value) {
   const d = new Date(value)
   if (Number.isNaN(d.getTime())) return value || '-'
-  return d.toLocaleString([], {
-    year: 'numeric', month: 'short', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  })
+  const p = (x) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+export function fmtDuration(value) {
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}s`
+  return `${Math.round(value)}ms`
+}
+
+const STATUS_TEXT = {
+  200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
+  301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
+  405: 'Method Not Allowed', 408: 'Request Timeout', 429: 'Too Many Requests',
+  500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway',
+  503: 'Service Unavailable', 504: 'Gateway Timeout',
+}
+
+export function statusLabel(code) {
+  return STATUS_TEXT[code] || ''
+}
+
+export function shortenId(id) {
+  const s = String(id || '')
+  if (s.length <= 8) return s
+  return `${s.slice(0, 8)}…`
+}
+
+export function escapeHtml(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+export function highlightJSON(text) {
+  const src = String(text ?? '')
+  if (!src) return ''
+  let out = ''
+  let i = 0
+  const n = src.length
+  while (i < n) {
+    const ch = src[i]
+    if (ch === '"') {
+      let j = i + 1
+      while (j < n && src[j] !== '"') {
+        if (src[j] === '\\') j++
+        j++
+      }
+      let k = j + 1
+      while (k < n && /\s/.test(src[k])) k++
+      const isKey = src[k] === ':'
+      out += `<span class="${isKey ? 'jk' : 'js'}">${escapeHtml(src.slice(i, j + 1))}</span>`
+      i = j + 1
+    } else if (/[0-9]/.test(ch) || (ch === '-' && i + 1 < n && /[0-9]/.test(src[i + 1]))) {
+      let j = i
+      while (j < n && /[0-9.eE+-]/.test(src[j])) j++
+      out += `<span class="jn">${escapeHtml(src.slice(i, j))}</span>`
+      i = j
+    } else if (/[a-zA-Z_]/.test(ch)) {
+      let j = i
+      while (j < n && /[a-zA-Z_]/.test(src[j])) j++
+      const word = src.slice(i, j)
+      if (word === 'true' || word === 'false' || word === 'null') {
+        out += `<span class="jn">${word}</span>`
+      } else {
+        out += `<span class="jb">${word}</span>`
+      }
+      i = j
+    } else {
+      out += escapeHtml(ch)
+      i++
+    }
+  }
+  return out
+    .split('\n')
+    .map((line, idx) => `<span class="ln">${String(idx + 1).padStart(3, ' ')}</span>${line}`)
+    .join('\n')
 }
 
 export function isCompleted(item) {
@@ -63,6 +165,26 @@ export function statusClass(code) {
   if (code >= 500) return 'status-err'
   if (code >= 400) return 'status-mid'
   return 'status-ok'
+}
+
+export function statusBucket(code) {
+  if (code === 0) return 'live'
+  if (code >= 500) return 'err5xx'
+  if (code >= 400) return 'err4xx'
+  return 'ok'
+}
+
+export function methodClass(method) {
+  const m = String(method || '').toUpperCase()
+  if (m === 'GET') return 'method-get'
+  if (m === 'POST') return 'method-post'
+  return 'method-other'
+}
+
+export function errRateTone(rate) {
+  if (!Number.isFinite(rate) || rate <= 0) return 'tone-good'
+  if (rate < 0.05) return 'tone-warm'
+  return 'tone-critical'
 }
 
 export function latencyTone(ms) {

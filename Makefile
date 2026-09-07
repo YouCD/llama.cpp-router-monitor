@@ -5,7 +5,6 @@
 #   make build-embed   嵌入模式（先构建前端，再把 web/ 内嵌进二进制，单文件部署）
 
 BINARY       := bin/llama_proxy
-EMBED_BINARY := bin/llama_proxy_embed
 GO           := go
 COMPOSE      := docker compose
 VERSION      ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
@@ -26,7 +25,7 @@ build:
 # 嵌入前端：先构建前端再编译，前端随二进制分发
 build-embed: frontend-build
 	mkdir -p bin
-	$(GO) build -tags embedweb -trimpath -ldflags "-s -w" -o $(EMBED_BINARY) .
+	$(GO) build -tags embedweb -trimpath -ldflags "-s -w" -o $(BINARY) .
 
 run: build
 	./$(BINARY)
@@ -63,7 +62,7 @@ docker-down:
 help:
 	@echo "可用目标:"
 	@echo "  make build          编译纯二进制到 bin/llama_proxy（前端需带 web/ 目录）"
-	@echo "  make build-embed    构建前端并嵌入二进制，输出 bin/llama_proxy_embed（单文件）"
+	@echo "  make build-embed    构建前端并嵌入二进制，输出 bin/llama_proxy（单文件）"
 	@echo "  make run            构建纯二进制并运行"
 	@echo "  make frontend-build 仅构建前端到 web/"
 	@echo "  make test           运行全部测试"

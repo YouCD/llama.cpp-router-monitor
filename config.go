@@ -54,12 +54,14 @@ type BackendConfig struct {
 }
 
 type MonitorConfig struct {
-	RetentionDays      int   `yaml:"retention_days"`
-	MaxRequestBytes    int   `yaml:"max_request_bytes"`
-	MaxCaptureBytes    int   `yaml:"max_capture_bytes"`
-	RequestTimeout     int   `yaml:"request_timeout_seconds"`
-	PollBackendMetrics *bool `yaml:"poll_backend_metrics"`
-	PollInterval       int   `yaml:"poll_interval_seconds"`
+	RetentionDays      int      `yaml:"retention_days"`
+	MaxRequestBytes    int      `yaml:"max_request_bytes"`
+	MaxCaptureBytes    int      `yaml:"max_capture_bytes"`
+	RequestTimeout     int      `yaml:"request_timeout_seconds"`
+	PollBackendMetrics *bool    `yaml:"poll_backend_metrics"`
+	PollInterval       int      `yaml:"poll_interval_seconds"`
+	IgnorePaths        []string `yaml:"ignore_paths"`
+	RecordPaths        []string `yaml:"record_paths"`
 }
 
 func loadYAMLConfig(path string) (*YAMLConfig, error) {
@@ -124,6 +126,26 @@ func applyEnvOverrides(cfg *YAMLConfig) {
 	if v := os.Getenv("DATABASE_DSN"); v != "" {
 		cfg.Database.PostgreSQL.DSN = v
 	}
+	if v := os.Getenv("MONITOR_IGNORE_PATHS"); v != "" {
+		var paths []string
+		for _, p := range strings.Split(v, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+		cfg.Monitor.IgnorePaths = paths
+	}
+	if v := os.Getenv("MONITOR_RECORD_PATHS"); v != "" {
+		var paths []string
+		for _, p := range strings.Split(v, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+		cfg.Monitor.RecordPaths = paths
+	}
 }
 
 func setConfigDefaults(cfg *YAMLConfig) {
@@ -170,6 +192,9 @@ func setConfigDefaults(cfg *YAMLConfig) {
 		v := true
 		cfg.Monitor.PollBackendMetrics = &v
 	}
+	if len(cfg.Monitor.IgnorePaths) == 0 {
+		cfg.Monitor.IgnorePaths = []string{"/favicon.ico", "/backend-metrics", "/metrics", "/.well-known"}
+	}
 
 	for i := range cfg.Backends.List {
 		if cfg.Backends.List[i].Weight == 0 {
@@ -203,6 +228,8 @@ func (c *YAMLConfig) toLegacyConfig() Config {
 		RequestTimeout:      time.Duration(c.Monitor.RequestTimeout) * time.Second,
 		PollBackendMetrics:  c.Monitor.PollBackendMetrics != nil && *c.Monitor.PollBackendMetrics,
 		PollInterval:        time.Duration(c.Monitor.PollInterval) * time.Second,
+		IgnorePaths:         c.Monitor.IgnorePaths,
+		RecordPaths:         c.Monitor.RecordPaths,
 	}
 }
 

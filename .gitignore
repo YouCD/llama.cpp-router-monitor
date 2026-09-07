@@ -14,3 +14,4 @@ web/
 .DS_Store
 Thumbs.db
 config.yaml
+.idea

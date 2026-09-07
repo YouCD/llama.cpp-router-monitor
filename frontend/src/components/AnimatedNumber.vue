@@ -1,43 +1,31 @@
 <template>
-  <span>{{ format(display) }}</span>
+  <CountUp :end-val="value" :start-val="from" :duration="durationSec" :options="options" />
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, computed, watch } from 'vue'
+import CountUp from 'vue-countup-v3'
 
 const props = defineProps({
   value: { type: Number, default: 0 },
   duration: { type: Number, default: 600 },
+  step: { type: Number, default: 0 },
   format: { type: Function, default: (v) => String(v) },
 })
 
-const display = ref(props.value)
-let raf = null
-let start = null
+const from = ref(props.value)
 
 watch(
   () => props.value,
-  (newVal) => {
-    if (raf) cancelAnimationFrame(raf)
-    const from = display.value
-    start = null
-    const step = (ts) => {
-      if (start === null) start = ts
-      const progress = Math.min((ts - start) / props.duration, 1)
-      const eased = 1 - Math.pow(1 - progress, 3)
-      display.value = from + (newVal - from) * eased
-      if (progress < 1) {
-        raf = requestAnimationFrame(step)
-      } else {
-        display.value = newVal
-      }
-    }
-    raf = requestAnimationFrame(step)
+  (newVal, oldVal) => {
+    from.value = oldVal
   },
-  { immediate: true },
 )
 
-onUnmounted(() => {
-  if (raf) cancelAnimationFrame(raf)
-})
+const durationSec = computed(() => Math.max(props.duration / 1000, 0.001))
+const options = computed(() => ({
+  duration: durationSec.value,
+  decimalPlaces: props.step > 0 ? 0 : 2,
+  formattingFn: (n) => props.format(n),
+}))
 </script>

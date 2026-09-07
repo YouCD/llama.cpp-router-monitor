@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-export default defineConfig({
-  base: '/_monitor/ui/',
+export default defineConfig(({ mode }) => ({
+  base: mode === 'development' ? '/' : '/_monitor/ui/',
   plugins: [vue()],
   build: {
     outDir: '../web',
@@ -18,4 +18,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

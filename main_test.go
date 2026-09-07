@@ -834,6 +834,7 @@ func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) 
 			MaxRequestBytes:     2 << 20,
 			MaxCaptureBytes:     2 << 20,
 			RequestTimeout:      15 * time.Second,
+			IgnorePaths:         []string{"/favicon.ico", "/backend-metrics", "/metrics", "/.well-known"},
 		},
 		db:       db,
 		balancer: NewBackendBalancer(backends, "wrr"),
@@ -988,5 +989,84 @@ func TestGetRequestsBackendFilter(t *testing.T) {
 	}
 	if recs[0].BackendURL != "http://gpu-1:8080" {
 		t.Fatalf("backend=%q", recs[0].BackendURL)
+	}
+}
+
+func TestProxyRecordPaths(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer backend.Close()
+
+	svc, _, cleanup := newTestServer(t, backend.URL)
+	defer cleanup()
+	svc.cfg.RecordPaths = []string{"/v1/chat/completions", "/v1/completions"}
+
+	proxy := httptest.NewServer(svc)
+	defer proxy.Close()
+
+	postJSON := func(path string) *http.Response {
+		resp, err := proxy.Client().Post(proxy.URL+path, "application/json",
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			t.Fatalf("post %s: %v", path, err)
+		}
+		return resp
+	}
+
+	resp := postJSON("/v1/embeddings")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("embeddings status=%d want 404 (not in whitelist)", resp.StatusCode)
+	}
+
+	recs, err := svc.getRequests(100, 0, RequestFilter{})
+	if err != nil {
+		t.Fatalf("getRequests: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("whitelisted out path recorded: got %d", len(recs))
+	}
+
+	resp2 := postJSON("/v1/chat/completions")
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("chat status=%d", resp2.StatusCode)
+	}
+
+	recs2, err := svc.getRequests(100, 0, RequestFilter{})
+	if err != nil {
+		t.Fatalf("getRequests: %v", err)
+	}
+	if len(recs2) != 1 || recs2[0].Path != "/v1/chat/completions" {
+		t.Fatalf("expected whitelisted request recorded, got %+v", recs2)
+	}
+}
+
+func TestShouldRecordProxy(t *testing.T) {
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+
+	if !svc.shouldRecordProxy("/v1/chat/completions") {
+		t.Fatal("default should record all non-ignored paths")
+	}
+	if svc.shouldRecordProxy("/favicon.ico") {
+		t.Fatal("favicon should be ignored by default")
+	}
+	if svc.shouldRecordProxy("/.well-known/openid-configuration") {
+		t.Fatal(".well-known prefix should be ignored")
+	}
+	if svc.shouldRecordProxy("/metrics/sub") {
+		t.Fatal("metrics prefix should be ignored")
+	}
+
+	svc.cfg.RecordPaths = []string{"/v1/chat/completions"}
+	if !svc.shouldRecordProxy("/v1/chat/completions") {
+		t.Fatal("whitelisted path should record")
+	}
+	if svc.shouldRecordProxy("/v1/embeddings") {
+		t.Fatal("non-whitelisted path should not record")
 	}
 }

@@ -2,76 +2,78 @@
   <div class="panel">
     <div class="section-title">{{ t('requestTape') }}</div>
     <el-table
-      :data="items"
+      :data="rows"
       :highlight-current-row="true"
       size="small"
       height="560"
+      :row-class-name="rowClassName"
       @row-click="onRowClick"
     >
-      <el-table-column :label="t('colTime')" min-width="110">
+      <el-table-column :label="t('colTime')" min-width="118">
         <template #default="{ row }">
-          <div class="mono">{{ fmtTime(row.created_at) }}</div>
-          <div class="cell-subtle">{{ row.client_ip || t('unknownClient') }}</div>
+          <div class="mono">{{ row._time }}</div>
+          <div class="cell-subtle">{{ row._rel }}</div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colRequest')" min-width="220">
+      <el-table-column :label="t('colRequest')" min-width="200">
         <template #default="{ row }">
-          <div>
-            <span class="method-badge">{{ row.method || '-' }}</span>
-            <span class="mono">{{ row.path || '-' }}</span>
+          <div class="req-line">
+            <span :class="'method-badge ' + methodClass(row.method)">{{ row.method || '-' }}</span>
+            <span class="mono req-path" :title="reqTitle(row)">{{ row.path || '-' }}</span>
+            <span class="cell-subtle req-ip">{{ row.client_ip || '' }}</span>
           </div>
-          <div class="cell-subtle">{{ row.query || t('noQuery') }}</div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colStatus')" width="80" align="center">
+      <el-table-column :label="t('colStatus')" width="76" align="center">
         <template #default="{ row }">
           <span :class="'status-tag ' + statusClass(row.status_code || 0)">
             {{ statusText(row) }}
           </span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colModel')" min-width="150">
+      <el-table-column :label="t('colModel')" min-width="140">
         <template #default="{ row }">
-          <div>{{ row.model || '-' }}</div>
-          <div class="cell-subtle">{{ rowState(row) }}</div>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('colTtft')" min-width="90" align="right">
-        <template #default="{ row }">
-          <span :class="latencyTone(row.first_byte_ms)">{{ fmtMs(row.first_byte_ms) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('colTotal')" min-width="90" align="right">
-        <template #default="{ row }">
-          <div>{{ fmtMs(row.total_ms) }}</div>
-          <div class="cell-subtle">{{ !completed(row) ? t('running') : t('chunks', { n: fmtNum(row.chunks_count || 0) }) }}</div>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('colPrompt')" min-width="70" align="right">
-        <template #default="{ row }">{{ fmtNum(row.prompt_tokens || 0) }}</template>
-      </el-table-column>
-      <el-table-column :label="t('colCompletion')" min-width="90" align="right">
-        <template #default="{ row }">{{ fmtNum(row.completion_tokens || 0) }}</template>
-      </el-table-column>
-      <el-table-column :label="t('colTotalTok')" min-width="80" align="right">
-        <template #default="{ row }">{{ fmtNum(row.total_tokens || 0) }}</template>
-      </el-table-column>
-      <el-table-column :label="t('colCache')" min-width="100" align="right">
-        <template #default="{ row }">
-          <span :class="cacheTone(row.cache_hit_pct || 0)">
-            {{ fmtPct(row.cache_hit_pct || 0) }}
-          </span>
-          <div class="cell-subtle">
-            {{ row.cached_prompt_tokens > 0 ? t('cached', { n: fmtNum(row.cached_prompt_tokens) }) : t('noCache') }}
+          <div class="model-cell">
+            <span :title="row.model || ''" class="model-name">{{ row.model || '-' }}</span>
+            <span v-if="row.is_streaming" class="stream-tag">{{ t('streaming') }}</span>
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colPromptPerSec')" min-width="90" align="right">
+      <el-table-column :label="t('colLatency')" min-width="120" align="right">
         <template #default="{ row }">
-          <span :class="rateTone(row.decode_tok_per_sec || 0)">
-            {{ fmtRate(row.decode_tok_per_sec || 0) }}
-          </span>
-          <div class="cell-subtle">{{ t('promptPrefix', { n: fmtRate(row.prompt_tok_per_sec || 0) }) }}</div>
+          <span :class="latencyTone(row.first_byte_ms)">{{ fmtLatency(row.first_byte_ms, row.total_ms, t('live')) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('colTokens')" min-width="100" align="right">
+        <template #default="{ row }">
+          <div class="mono">{{ fmtTokens(row.prompt_tokens, row.completion_tokens) }}</div>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('colCache')" min-width="76" align="right">
+        <template #default="{ row }">
+          <el-tooltip :content="cacheTip(row)" placement="top">
+            <span :class="cacheTone(row.cache_hit_pct || 0)">
+              <span class="cache-dot" :class="cacheDotClass(row)"></span>
+              {{ fmtCache(row.cache_hit_pct || 0) }}
+            </span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('colPromptPerSec')" min-width="80" align="right">
+        <template #default="{ row }">
+          <span :class="rateTone(row.decode_tok_per_sec || 0)">{{ fmtRate(row.decode_tok_per_sec || 0) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column width="84" fixed="right" align="center">
+        <template #default="{ row }">
+          <div class="row-actions">
+            <el-tooltip :content="t('copyRequest')" placement="top">
+              <el-button text :icon="CopyDocument" size="small" @click.stop="onCopy(row)" />
+            </el-tooltip>
+            <el-tooltip :content="t('viewDetail')" placement="top">
+              <el-button text :icon="View" size="small" :disabled="!completed(row)" @click.stop="onRowClick(row)" />
+            </el-tooltip>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -84,18 +86,22 @@
 
     <el-empty v-if="items.length === 0" :description="t('emptyTitle')">
       <p>{{ t('emptyDesc') }}</p>
+      <p class="empty-idle"><span class="live-dot live"></span>{{ t('emptyIdle') }}</p>
     </el-empty>
   </div>
 </template>
 
 <script setup>
+import { computed } from 'vue'
+import { CopyDocument, View } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { t } from '../i18n'
 import {
-  fmtTime, fmtNum, fmtMs, fmtRate, fmtPercent,
-  isCompleted as completed, statusClass, latencyTone, rateTone, cacheTone,
+  fmtTime, fmtNum, fmtRate, fmtPercent, fmtLatency, fmtTokens, shortQuery,
+  isCompleted as completed, statusClass, latencyTone, rateTone, cacheTone, methodClass,
 } from '../utils'
 
-defineProps({
+const props = defineProps({
   items: { type: Array, default: () => [] },
   hasMore: { type: Boolean, default: false },
   loadingMore: { type: Boolean, default: false },
@@ -103,17 +109,70 @@ defineProps({
 })
 const emit = defineEmits(['loadMore', 'select'])
 
+const BREAK_MS = 30 * 60 * 1000
+
+const rows = computed(() => {
+  const now = Date.now()
+  let prevTs = null
+  return props.items.map((it) => {
+    const ts = new Date(it.created_at).getTime()
+    let breakLine = false
+    if (prevTs !== null && Number.isFinite(ts) && Number.isFinite(prevTs)) {
+      breakLine = Math.abs(ts - prevTs) > BREAK_MS
+    }
+    prevTs = Number.isFinite(ts) ? ts : prevTs
+    return {
+      ...it,
+      _time: fmtTime(it.created_at),
+      _rel: fmtRelative(it.created_at, now),
+      _break: breakLine,
+    }
+  })
+})
+
 function statusText(row) {
   return completed(row) ? String(row.status_code || 0) : t('live')
 }
-function fmtPct(v) {
-  return fmtPercent(v / 100)
+function fmtCache(v) {
+  return `${Math.round(v || 0)}%`
 }
-function rowState(row) {
-  if (!completed(row)) return t('inProgress')
-  return row.is_streaming ? t('streaming') : t('standard')
+function cacheTip(row) {
+  return row.cached_prompt_tokens > 0
+    ? t('cached', { n: fmtNum(row.cached_prompt_tokens) })
+    : t('noCache')
+}
+function cacheDotClass(row) {
+  return (row.cache_hit_pct || 0) > 0 ? 'hit' : 'miss'
+}
+function reqTitle(row) {
+  return row.query ? `${row.path || ''}?${row.query}` : (row.path || '')
+}
+function fmtRelative(value, now) {
+  const ts = new Date(value).getTime()
+  if (!Number.isFinite(ts)) return ''
+  const diff = Math.max(0, now - ts)
+  const sec = Math.floor(diff / 1000)
+  if (sec < 5) return t('relJustNow')
+  if (sec < 60) return t('relSec', { n: sec })
+  const min = Math.floor(sec / 60)
+  if (min < 60) return t('relMin', { n: min })
+  const h = Math.floor(min / 60)
+  if (h < 24) return t('relHour', { n: h })
+  return t('relDay', { n: Math.floor(h / 24) })
+}
+function rowClassName({ row }) {
+  return row._break ? 'row-break' : ''
 }
 function onRowClick(row) {
   if (completed(row)) emit('select', row)
+}
+async function onCopy(row) {
+  const q = row.query ? `?${row.query}` : ''
+  try {
+    await navigator.clipboard.writeText(`${row.method || ''} ${row.path || ''}${q}`)
+    ElMessage.success(t('copied'))
+  } catch {
+    /* clipboard unavailable */
+  }
 }
 </script>

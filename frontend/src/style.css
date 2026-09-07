@@ -7,13 +7,35 @@ html.dark {
   --app-panel: #161b22;
   --app-line: #30363d;
   --app-text: #e6edf3;
-  --app-muted: #8b949e;
+  --app-muted: #9da7b1;
   --app-accent: #1f6feb;
   --app-ok: #3fb950;
   --app-warn: #d29922;
   --app-bad: #f85149;
   --app-cyan: #39c5cf;
   --app-violet: #bc8cff;
+  --el-switch-on-color: #39c5cf;
+}
+
+.lang-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--app-muted);
+  font-size: 13px;
+  padding: 5px 10px;
+  border: 1px solid var(--app-line);
+  border-radius: 999px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.lang-btn:hover {
+  color: var(--app-text);
+  border-color: var(--app-accent);
+}
+.lang-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 body {
@@ -70,10 +92,15 @@ body {
 }
 .live-dot.live {
   background: var(--app-ok);
-  box-shadow: 0 0 8px var(--app-ok);
+  animation: pulse-dot 1.6s ease-out infinite;
 }
 .live-dot.error {
   background: var(--app-bad);
+}
+@keyframes pulse-dot {
+  0% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(63, 185, 80, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
 }
 
 .panel {
@@ -93,12 +120,28 @@ body {
   margin-bottom: 12px;
 }
 
-/* 指标卡片 */
+/* 指标卡片（分组） */
+.stats-groups {
+  margin-bottom: 4px;
+}
+.stats-group {
+  margin-bottom: 18px;
+}
+.stats-group:last-child {
+  margin-bottom: 8px;
+}
+.group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
 }
 
 .stat-card {
@@ -114,45 +157,125 @@ body {
 }
 
 .stat-card .value {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   margin-top: 6px;
   font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .stat-card .foot {
   color: var(--app-muted);
   font-size: 11px;
   margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* 后端统计 */
-.backend-grid {
+.stat-card.featured {
+  border-color: rgba(57, 197, 207, 0.3);
+}
+.stat-card.tone-good .value { color: var(--app-ok); }
+.stat-card.tone-warm .value { color: var(--app-warn); }
+.stat-card.tone-critical .value { color: var(--app-bad); }
+
+/* 快捷筛选标签 */
+.quick-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.quick-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--app-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--app-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.quick-tag:hover {
+  border-color: var(--app-accent);
+  color: var(--app-text);
+}
+.quick-tag.active {
+  border-color: var(--app-accent);
+  background: rgba(31, 111, 235, 0.15);
+  color: var(--app-text);
+}
+.quick-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.quick-dot.dot-all { background: var(--app-muted); }
+.quick-dot.dot-ok { background: var(--app-ok); }
+.quick-dot.dot-warn { background: var(--app-warn); }
+.quick-dot.dot-bad { background: var(--app-bad); }
+.quick-dot.dot-cyan { background: var(--app-cyan); }
+.quick-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* 高级筛选 */
+.adv-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--app-line);
+}
+.since-unit {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.adv-toggle {
+  color: var(--app-muted);
+}
+.adv-toggle.active {
+  color: var(--app-cyan);
+}
+
+/* 后端统计（横向 Bar） */
+.backend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.backend-bar {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 12px;
-}
-
-.backend-card {
+  grid-template-columns: auto minmax(150px, 220px) minmax(140px, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 14px;
   background: var(--app-panel);
   border: 1px solid var(--app-line);
   border-radius: 8px;
-  padding: 12px 14px;
   cursor: pointer;
   transition: border-color 0.15s;
 }
-.backend-card:hover {
+.backend-bar:hover {
   border-color: var(--app-accent);
 }
 
-.backend-card .head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
+.backend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--app-muted);
 }
+.backend-dot.dot-ok { background: var(--app-ok); box-shadow: 0 0 6px var(--app-ok); }
+.backend-dot.dot-warn { background: var(--app-warn); }
+.backend-dot.dot-bad { background: var(--app-bad); }
 
-.backend-card .name {
+.backend-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-weight: 700;
   font-size: 13px;
   overflow: hidden;
@@ -160,28 +283,48 @@ body {
   white-space: nowrap;
 }
 
-.backend-card .err-rate {
-  font-size: 12px;
-  font-weight: 700;
+.backend-load {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.load-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(139, 148, 158, 0.18);
+  overflow: hidden;
+}
+.load-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.load-fill.fill-low { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+.load-fill.fill-mid { background: linear-gradient(90deg, #8b5cf6, #a855f7); }
+.load-fill.fill-high { background: linear-gradient(90deg, #f97316, #ef4444); }
+.load-label {
+  color: var(--app-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
-.backend-card .metrics {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
+.backend-metrics {
+  display: flex;
+  gap: 16px;
 }
-
-.backend-card .metric {
+.metric-cell {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-.backend-card .metric span {
+  align-items: flex-end;
   color: var(--app-muted);
   font-size: 10px;
   text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
-.backend-card .metric strong {
+.metric-cell strong {
+  color: var(--app-text);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
@@ -226,6 +369,99 @@ body {
   background: rgba(31, 111, 235, 0.15);
   color: var(--app-accent);
   margin-right: 6px;
+  flex-shrink: 0;
+}
+.method-badge.method-get {
+  background: rgba(57, 197, 207, 0.16);
+  color: var(--app-cyan);
+}
+.method-badge.method-post {
+  background: rgba(188, 140, 255, 0.16);
+  color: var(--app-violet);
+}
+.method-badge.method-other {
+  background: rgba(139, 148, 158, 0.16);
+  color: var(--app-muted);
+}
+
+.req-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.req-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.req-ip {
+  margin-left: auto;
+  padding-left: 10px;
+  flex-shrink: 0;
+}
+
+.model-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stream-tag {
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--app-cyan);
+  border: 1px solid rgba(57, 197, 207, 0.35);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+.cache-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+.cache-dot.hit {
+  background: currentColor;
+}
+.cache-dot.miss {
+  background: transparent;
+  border: 1px solid var(--app-muted);
+  box-sizing: border-box;
+}
+
+.el-table .row-break td {
+  border-top: 1px dashed var(--app-muted);
+}
+
+.empty-idle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--app-muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.row-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.el-table__row:hover .row-actions {
+  opacity: 1;
 }
 
 .cell-subtle {

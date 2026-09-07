@@ -15,17 +15,26 @@
             <span class="cell-subtle">{{ t('autoRefresh') }}</span>
           </span>
           <el-button :icon="Refresh" @click="refreshNow" round>{{ t('refresh') }}</el-button>
-          <el-button :icon="Switch" @click="toggleLang" round>
-            {{ currentLang === 'zh' ? 'EN' : '中文' }}
-          </el-button>
+          <el-dropdown trigger="hover" @command="onLangCommand">
+            <span class="lang-btn">
+              <span class="lang-icon">🌐</span>
+              <span>{{ currentLang === 'zh' ? '中文' : 'English' }}</span>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="zh" :disabled="currentLang === 'zh'">中文</el-dropdown-item>
+                <el-dropdown-item command="en" :disabled="currentLang === 'en'">English</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </header>
 
-      <StatsCards :stats="stats" :has-filters="hasFilters" :output-sec="outputSec" />
+      <StatsCards :stats="stats" :llm-stats="llmStats" :has-filters="hasFilters" :output-sec="outputSec" :hours="statsHours" />
 
-      <BackendStats :items="backendStats" @select="onBackendSelect" />
+      <BackendStats :items="backendStats" :hours="statsHours" @select="onBackendSelect" />
 
-      <FilterPanel ref="filterPanel" :models="models" :backends="backends" @apply="onApply" @reset="onApply" />
+      <FilterPanel ref="filterPanel" :models="models" :backends="backends" :quick-counts="quickCounts" @apply="onApply" />
 
       <RequestTable
         :items="items"
@@ -46,26 +55,27 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { Refresh, Switch } from '@element-plus/icons-vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import StatsCards from './components/StatsCards.vue'
 import BackendStats from './components/BackendStats.vue'
 import FilterPanel from './components/FilterPanel.vue'
 import RequestTable from './components/RequestTable.vue'
 import RequestDrawer from './components/RequestDrawer.vue'
-import { currentLang, elementLocale, t, toggleLang, setLang } from './i18n'
+import { currentLang, elementLocale, t, setLang } from './i18n'
 import {
   fetchStats, fetchRequests, fetchRequest, fetchModels, fetchBackends,
-  fetchStatsByBackend, queryString,
+  fetchStatsByBackend,
 } from './api'
-import { fmtDate, isCompleted } from './utils'
+import { fmtDate, statusBucket } from './utils'
 
 const pageSize = 100
 const locale = computed(() => elementLocale())
 
 const filters = reactive({})
 const stats = reactive({})
+const llmStats = reactive({})
 const items = ref([])
 const backendStats = ref([])
 const models = ref([])
@@ -83,6 +93,22 @@ const filterPanel = ref(null)
 
 const hasFilters = computed(() => Object.keys(filters).length > 0)
 
+const statsHours = computed(
+  () => Number.parseInt(filters.since_hours || '1', 10) || 1,
+)
+
+const quickCounts = computed(() => {
+  const c = { ok: 0, err4xx: 0, err5xx: 0, stream: 0 }
+  for (const it of items.value) {
+    const b = statusBucket(it.status_code || 0)
+    if (b === 'ok') c.ok++
+    else if (b === 'err4xx') c.err4xx++
+    else if (b === 'err5xx') c.err5xx++
+    if (it.is_streaming) c.stream++
+  }
+  return c
+})
+
 let refreshTimer = null
 let eventSource = null
 let pollTimers = []
@@ -99,9 +125,15 @@ function setFilters(f) {
 
 async function loadStats() {
   try {
-    const data = await fetchStats({ ...filters })
+    const base = { hours: statsHours.value, ...filters }
+    const [data, llm] = await Promise.all([
+      fetchStats(base),
+      fetchStats({ ...base, chat_completions_only: 'true' }),
+    ])
     Object.keys(stats).forEach((k) => delete stats[k])
     Object.assign(stats, data)
+    Object.keys(llmStats).forEach((k) => delete llmStats[k])
+    Object.assign(llmStats, llm)
     lastUpdated.value = fmtDate(new Date().toISOString())
   } catch (err) {
     setLive('error', t('refreshFailed', { msg: err.message }))
@@ -139,8 +171,7 @@ async function loadMore() {
 
 async function loadBackendStats() {
   try {
-    const hours = Number.parseInt(filters.since_hours || '1', 10) || 1
-    backendStats.value = await fetchStatsByBackend(hours)
+    backendStats.value = await fetchStatsByBackend(statsHours.value)
   } catch {
     /* ignore */
   }
@@ -183,6 +214,11 @@ async function openDetails(row) {
 
 function onDeleted() {
   refreshAll().catch(() => {})
+}
+
+function onLangCommand(lang) {
+  if (lang === currentLang.value) return
+  setLang(lang)
 }
 
 function scheduleEventRefresh() {

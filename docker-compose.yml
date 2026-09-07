@@ -1,6 +1,9 @@
 services:
   llama-cpp-router-monitor:
-    build: .
+    build:
+      context: .
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
     container_name: llama-cpp-router-monitor
     ports:
       - "9091:9091"
