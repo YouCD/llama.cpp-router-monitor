@@ -759,7 +759,7 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 	}
 
 	streamTrue := true
-	stats, err := svc.getStats(24, RequestFilter{Streaming: &streamTrue, WithTokens: true, Path: "/v1/chat"})
+	stats, err := svc.getStats(24, RequestFilter{Streaming: &streamTrue, WithTokens: true, Path: "/v1/chat/completions"})
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}

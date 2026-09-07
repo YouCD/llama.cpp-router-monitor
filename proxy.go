@@ -79,7 +79,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		log.Printf("insert request failed: %v", err)
 	}
 
-	target := backendURL + r.URL.Path
+	target := backendURL + buildProxyPath(backendURL, r.URL.Path)
 	if trimmedQuery != "" {
 		target += "?" + trimmedQuery
 	}
@@ -218,6 +218,18 @@ func (s *Server) shouldRecordProxy(path string) bool {
 		return false
 	}
 	return s.pathMatches(path, s.cfg.RecordPaths)
+}
+
+// buildProxyPath 拼接转发路径：当后端 url 已带 /v1 时去掉客户端路径的 /v1 前缀，
+// 避免 /v1 重复；后端 url 不带 /v1 时保留客户端路径原样（OpenAI 标准 /v1/...）。
+func buildProxyPath(backendURL, path string) string {
+	if strings.Contains(backendURL, "/v1") {
+		if path == "/v1" {
+			return "/"
+		}
+		return strings.TrimPrefix(path, "/v1")
+	}
+	return path
 }
 
 func (s *Server) selectBackend(r *http.Request) (backend string, query string, bc *BackendConfig, err error) {

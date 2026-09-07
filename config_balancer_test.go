@@ -508,6 +508,88 @@ func TestHandleProxyBackendKeyDoesNotOverrideClientKeyWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestHandleProxyStripsVersionPrefixWhenBackendHasV1(t *testing.T) {
+	var gotPath string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"model":"m","usage":{}}`)
+	}))
+	defer backend.Close()
+
+	dataDir := t.TempDir()
+	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "monitor.db"}}
+	db, err := NewDatabase(sqlCfg, dataDir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := InitDB(db, "sqlite"); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	backends := []BackendConfig{
+		{Name: "qwen", URL: backend.URL + "/v1", Weight: 1, Enabled: true, Model: "qwen"},
+	}
+
+	svc := &Server{
+		cfg: Config{
+			ListenAddr:          ":0",
+			AllowDynamicBackend: true,
+			DataDir:             dataDir,
+			RetentionDays:       14,
+			MaxRequestBytes:     2 << 20,
+			MaxCaptureBytes:     2 << 20,
+			RequestTimeout:      15 * time.Second,
+			RecordPaths:         []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
+		},
+		db:       db,
+		balancer: NewBackendBalancer(backends, "wrr"),
+		client:   &http.Client{Timeout: 15 * time.Second},
+		hub:      NewEventHub(),
+	}
+
+	proxy := httptest.NewServer(svc)
+	defer proxy.Close()
+
+	resp, err := proxy.Client().Post(proxy.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"m","messages":[]}`))
+	if err != nil {
+		t.Fatalf("proxy post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("backend received path=%q, want /v1/chat/completions (no duplicate /v1)", gotPath)
+	}
+}
+
+func TestBuildProxyPath(t *testing.T) {
+	cases := []struct {
+		backend, in, want string
+	}{
+		{"http://host/v1", "/v1/chat/completions", "/chat/completions"},
+		{"http://host/v1", "/v1/completions", "/completions"},
+		{"http://host/v1", "/v1/embeddings", "/embeddings"},
+		{"http://host/v1", "/v1", "/"},
+		{"http://host/v1", "/chat/completions", "/chat/completions"},
+		{"http://host", "/v1/chat/completions", "/v1/chat/completions"},
+		{"http://host", "/chat/completions", "/chat/completions"},
+		{"http://host/v1", "/v2/models", "/v2/models"},
+		{"http://host", "/", "/"},
+	}
+	for _, c := range cases {
+		if got := buildProxyPath(c.backend, c.in); got != c.want {
+			t.Errorf("buildProxyPath(%q, %q)=%q, want %q", c.backend, c.in, got, c.want)
+		}
+	}
+}
+
 func TestRebindPostgres(t *testing.T) {
 	queries := []struct {
 		in, want string
