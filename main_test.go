@@ -108,6 +108,7 @@ func TestHandleProxyNonStreamingLlamaCppJSON(t *testing.T) {
 
 	svc, _, cleanup := newTestServer(t, backend.URL)
 	defer cleanup()
+	svc.cfg.RecordPaths = append(svc.cfg.RecordPaths, "/completion")
 
 	proxy := httptest.NewServer(svc)
 	defer proxy.Close()
@@ -834,7 +835,7 @@ func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) 
 			MaxRequestBytes:     2 << 20,
 			MaxCaptureBytes:     2 << 20,
 			RequestTimeout:      15 * time.Second,
-			IgnorePaths:         []string{"/favicon.ico", "/backend-metrics", "/metrics", "/.well-known"},
+			RecordPaths:         []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
 		},
 		db:       db,
 		balancer: NewBackendBalancer(backends, "wrr"),
@@ -1049,19 +1050,19 @@ func TestShouldRecordProxy(t *testing.T) {
 	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 
-	if !svc.shouldRecordProxy("/v1/chat/completions") {
-		t.Fatal("default should record all non-ignored paths")
+	// 默认白名单：仅 OpenAI 兼容路径被转发记录，其余一律 404
+	for _, p := range []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"} {
+		if !svc.shouldRecordProxy(p) {
+			t.Fatalf("whitelisted path %s should record", p)
+		}
 	}
-	if svc.shouldRecordProxy("/favicon.ico") {
-		t.Fatal("favicon should be ignored by default")
-	}
-	if svc.shouldRecordProxy("/.well-known/openid-configuration") {
-		t.Fatal(".well-known prefix should be ignored")
-	}
-	if svc.shouldRecordProxy("/metrics/sub") {
-		t.Fatal("metrics prefix should be ignored")
+	for _, p := range []string{"/favicon.ico", "/metrics", "/.well-known/openid-configuration", "/", "/v1/foo"} {
+		if svc.shouldRecordProxy(p) {
+			t.Fatalf("non-whitelisted path %s should not record", p)
+		}
 	}
 
+	// 自定义白名单覆盖默认
 	svc.cfg.RecordPaths = []string{"/v1/chat/completions"}
 	if !svc.shouldRecordProxy("/v1/chat/completions") {
 		t.Fatal("whitelisted path should record")

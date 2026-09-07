@@ -2,8 +2,6 @@ package main
 
 import (
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -60,7 +58,6 @@ type MonitorConfig struct {
 	RequestTimeout     int      `yaml:"request_timeout_seconds"`
 	PollBackendMetrics *bool    `yaml:"poll_backend_metrics"`
 	PollInterval       int      `yaml:"poll_interval_seconds"`
-	IgnorePaths        []string `yaml:"ignore_paths"`
 	RecordPaths        []string `yaml:"record_paths"`
 }
 
@@ -75,77 +72,9 @@ func loadYAMLConfig(path string) (*YAMLConfig, error) {
 		return nil, err
 	}
 
-	applyEnvOverrides(cfg)
 	setConfigDefaults(cfg)
 
 	return cfg, nil
-}
-
-func applyEnvOverrides(cfg *YAMLConfig) {
-	if v := os.Getenv("LISTEN_ADDR"); v != "" {
-		cfg.Server.ListenAddr = v
-	}
-	if v := os.Getenv("DATA_DIR"); v != "" {
-		cfg.Server.DataDir = v
-	}
-	if v := os.Getenv("ALLOW_DYNAMIC_BACKEND"); v != "" {
-		cfg.Backends.AllowDynamic = parseBoolEnv(v, cfg.Backends.AllowDynamic)
-	}
-	if v := os.Getenv("RETENTION_DAYS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Monitor.RetentionDays = i
-		}
-	}
-	if v := os.Getenv("MAX_REQUEST_BYTES"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Monitor.MaxRequestBytes = i
-		}
-	}
-	if v := os.Getenv("MAX_CAPTURE_BYTES"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Monitor.MaxCaptureBytes = i
-		}
-	}
-	if v := os.Getenv("REQUEST_TIMEOUT_SECONDS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Monitor.RequestTimeout = i
-		}
-	}
-	if v := os.Getenv("POLL_BACKEND_METRICS"); v != "" {
-		b := parseBoolEnv(v, cfg.Monitor.PollBackendMetrics != nil && *cfg.Monitor.PollBackendMetrics)
-		cfg.Monitor.PollBackendMetrics = &b
-	}
-	if v := os.Getenv("POLL_INTERVAL_SECONDS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			cfg.Monitor.PollInterval = i
-		}
-	}
-	if v := os.Getenv("DATABASE_TYPE"); v != "" {
-		cfg.Database.Type = v
-	}
-	if v := os.Getenv("DATABASE_DSN"); v != "" {
-		cfg.Database.PostgreSQL.DSN = v
-	}
-	if v := os.Getenv("MONITOR_IGNORE_PATHS"); v != "" {
-		var paths []string
-		for _, p := range strings.Split(v, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				paths = append(paths, p)
-			}
-		}
-		cfg.Monitor.IgnorePaths = paths
-	}
-	if v := os.Getenv("MONITOR_RECORD_PATHS"); v != "" {
-		var paths []string
-		for _, p := range strings.Split(v, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				paths = append(paths, p)
-			}
-		}
-		cfg.Monitor.RecordPaths = paths
-	}
 }
 
 func setConfigDefaults(cfg *YAMLConfig) {
@@ -192,8 +121,8 @@ func setConfigDefaults(cfg *YAMLConfig) {
 		v := true
 		cfg.Monitor.PollBackendMetrics = &v
 	}
-	if len(cfg.Monitor.IgnorePaths) == 0 {
-		cfg.Monitor.IgnorePaths = []string{"/favicon.ico", "/backend-metrics", "/metrics", "/.well-known"}
+	if len(cfg.Monitor.RecordPaths) == 0 {
+		cfg.Monitor.RecordPaths = []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"}
 	}
 
 	for i := range cfg.Backends.List {
@@ -203,17 +132,6 @@ func setConfigDefaults(cfg *YAMLConfig) {
 		if !cfg.Backends.List[i].Enabled && cfg.Backends.List[i].Weight > 0 {
 			cfg.Backends.List[i].Enabled = true
 		}
-	}
-}
-
-func parseBoolEnv(v string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
 	}
 }
 
@@ -228,7 +146,6 @@ func (c *YAMLConfig) toLegacyConfig() Config {
 		RequestTimeout:      time.Duration(c.Monitor.RequestTimeout) * time.Second,
 		PollBackendMetrics:  c.Monitor.PollBackendMetrics != nil && *c.Monitor.PollBackendMetrics,
 		PollInterval:        time.Duration(c.Monitor.PollInterval) * time.Second,
-		IgnorePaths:         c.Monitor.IgnorePaths,
 		RecordPaths:         c.Monitor.RecordPaths,
 	}
 }

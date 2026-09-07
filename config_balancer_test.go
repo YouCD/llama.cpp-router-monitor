@@ -130,35 +130,6 @@ monitor: {}
 	}
 }
 
-func TestEnvOverridesYAML(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	content := `
-server:
-  listen_addr: ":9999"
-monitor:
-  retention_days: 30
-`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	t.Setenv("LISTEN_ADDR", ":7777")
-	t.Setenv("RETENTION_DAYS", "7")
-
-	cfg, err := loadYAMLConfig(path)
-	if err != nil {
-		t.Fatalf("load yaml config: %v", err)
-	}
-
-	if cfg.Server.ListenAddr != ":7777" {
-		t.Fatalf("listen_addr=%q want :7777 (env override)", cfg.Server.ListenAddr)
-	}
-	if cfg.Monitor.RetentionDays != 7 {
-		t.Fatalf("retention_days=%d want 7 (env override)", cfg.Monitor.RetentionDays)
-	}
-}
-
 func TestBackendBalancerWeightedSelect(t *testing.T) {
 	backends := []BackendConfig{
 		{Name: "a", URL: "http://a:8080", Weight: 50, Enabled: true},
@@ -346,6 +317,41 @@ func TestSelectBackendBalancerReturnsConfig(t *testing.T) {
 	}
 }
 
+func TestHandleModels(t *testing.T) {
+	backends := []BackendConfig{
+		{Name: "qwen", URL: "http://gpu-1:8080", Weight: 1, Enabled: true, Model: "qwen3.8"},
+		{Name: "llm_proxy", URL: "http://proxy:8080", Weight: 1, Enabled: true},
+	}
+	cfg := Config{
+		AllowDynamicBackend: true,
+	}
+	svc := &Server{cfg: cfg, balancer: NewBackendBalancer(backends, "rr")}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	svc.handleModels(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var payload struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Object != "list" {
+		t.Fatalf("object=%q", payload.Object)
+	}
+	// 固定返回单个占位模型 llm_prox，与后端配置/负载均衡无关
+	if len(payload.Data) != 1 || payload.Data[0].ID != "llm_prox" {
+		t.Fatalf("expected exactly llm_prox, got %+v", payload.Data)
+	}
+}
+
 func TestRewriteModel(t *testing.T) {
 	body := []byte(`{"model":"client-model","messages":[]}`)
 	newBody, model, err := rewriteModel(body, "qwen")
@@ -412,6 +418,7 @@ func TestHandleProxyWithModelRewriteAndAPIKey(t *testing.T) {
 			MaxRequestBytes:     2 << 20,
 			MaxCaptureBytes:     2 << 20,
 			RequestTimeout:      15 * time.Second,
+			RecordPaths:         []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
 		},
 		db:       db,
 		balancer: NewBackendBalancer(backends, "wrr"),
@@ -476,6 +483,7 @@ func TestHandleProxyBackendKeyDoesNotOverrideClientKeyWhenEmpty(t *testing.T) {
 			MaxRequestBytes:     2 << 20,
 			MaxCaptureBytes:     2 << 20,
 			RequestTimeout:      15 * time.Second,
+			RecordPaths:         []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
 		},
 		db:       db,
 		balancer: NewBackendBalancer(backends, "wrr"),

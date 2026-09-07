@@ -271,12 +271,13 @@ Local data is stored in `./data`:
 - `monitor.db` - SQLite database
 - `raw/YYYY-MM-DD/*.gz` - raw request/response payloads
 
-Old data is deleted automatically after `RETENTION_DAYS`.
+Old data is deleted automatically after `monitor.retention_days`.
 
-If you want to keep everything indefinitely:
+If you want to keep everything indefinitely, set `retention_days: 0` in the YAML config:
 
-```env
-RETENTION_DAYS=0
+```yaml
+monitor:
+  retention_days: 0
 ```
 
 `0` or any negative value disables automatic cleanup.
@@ -294,6 +295,7 @@ RETENTION_DAYS=0
 - `GET /_monitor/events`
 - `GET /_monitor/backend-metrics?limit=200`
 - `GET /_monitor/ui`
+- `GET /v1/models` — OpenAI-compatible model list, answered by the router itself (not forwarded)
 
 Supported request filters:
 
@@ -317,29 +319,13 @@ curl http://localhost:9091/v1/chat/completions \
 
 ## Configuration
 
-Main environment variables:
-
-- `LISTEN_ADDR`
-- `ALLOW_DYNAMIC_BACKEND`
-- `RETENTION_DAYS`
-- `MAX_REQUEST_BYTES`
-- `MAX_CAPTURE_BYTES`
-- `REQUEST_TIMEOUT_SECONDS`
-- `POLL_BACKEND_METRICS`
-- `POLL_INTERVAL_SECONDS`
-- `DATA_DIR`
+The monitor is configured exclusively via a YAML configuration file.
 
 Backends are configured via `backends.list` in the YAML file.
 
-See [`.env.example`](./.env.example) for defaults.
-
 ### YAML Configuration
 
-The monitor supports a YAML configuration file with environment variable overrides.
-
-Set `CONFIG_PATH` (default `config.yaml`) to enable it.
-
-**Priority:** environment variables > YAML file > built-in defaults.
+Pass the config file with `-f <path>` (default `config.yaml`).
 
 ```yaml
 server:
@@ -382,32 +368,16 @@ monitor:
 - [Quick Start](config.quickstart.yaml) - minimal configuration
 - [Full Example](config.example.yaml) - all available options
 
-### Environment Variables (Legacy)
-
-Environment variables remain fully supported. When both are present, environment variables override the YAML file:
-
-| YAML | Environment Variable | Default |
-|------|---------------------|---------|
-| `server.listen_addr` | `LISTEN_ADDR` | `:9091` |
-| `server.data_dir` | `DATA_DIR` | `./data` |
-| `backends.allow_dynamic` | `ALLOW_DYNAMIC_BACKEND` | `true` |
-| `monitor.retention_days` | `RETENTION_DAYS` | `14` |
-| `monitor.max_request_bytes` | `MAX_REQUEST_BYTES` | `33554432` |
-| `monitor.max_capture_bytes` | `MAX_CAPTURE_BYTES` | `33554432` |
-| `monitor.request_timeout_seconds` | `REQUEST_TIMEOUT_SECONDS` | `600` |
-| `monitor.poll_backend_metrics` | `POLL_BACKEND_METRICS` | `true` |
-| `monitor.poll_interval_seconds` | `POLL_INTERVAL_SECONDS` | `10` |
-
 ### PostgreSQL Database
 
-The monitor uses SQLite by default. To use PostgreSQL, set env vars:
+The monitor uses SQLite by default. To use PostgreSQL, use the `database` section in the YAML file:
 
-```env
-DATABASE_TYPE=postgresql
-DATABASE_DSN=postgres://user:password@localhost:5432/monitor?sslmode=disable
+```yaml
+database:
+  type: postgresql
+  postgresql:
+    dsn: "postgres://user:password@localhost:5432/monitor?sslmode=disable"
 ```
-
-or use the `database` section in the YAML file.
 
 On startup the monitor:
 - **auto-creates the database itself** if it does not exist (connects to the `postgres` maintenance database and runs `CREATE DATABASE`; the DB user needs `CREATEDB` privilege)
@@ -437,10 +407,9 @@ Per-request overrides still take priority over the balancer:
 
 To keep it lean:
 
-- keep `MAX_CAPTURE_BYTES` reasonable, for example `8MB` to `32MB`
-- disable backend metrics polling if you do not need it:
-  - `POLL_BACKEND_METRICS=false`
-- increase `POLL_INTERVAL_SECONDS` if `/metrics` does not need frequent polling
+- keep `monitor.max_capture_bytes` reasonable, for example `8MB` to `32MB`
+- disable backend metrics polling if you do not need it: `monitor.poll_backend_metrics: false`
+- increase `monitor.poll_interval_seconds` if `/metrics` does not need frequent polling
 
 ## Limitations
 
