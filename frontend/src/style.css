@@ -120,6 +120,19 @@ body {
   margin-bottom: 12px;
 }
 
+/* 按日统计图表 */
+.daily-section {
+  margin-bottom: 16px;
+}
+.daily-heading {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--app-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 12px;
+}
+
 /* 指标卡片（分组） */
 .stats-groups {
   margin-bottom: 4px;

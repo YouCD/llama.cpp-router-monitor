@@ -60,3 +60,11 @@ export async function fetchStatsByBackend(hours) {
   const data = await fetchJSON(`/_monitor/stats-by-backend?${queryString({ hours })}`)
   return Array.isArray(data.items) ? data.items : []
 }
+
+export async function fetchDailyStats(days, filters = {}) {
+  const data = await fetchJSON(`/_monitor/daily-stats?${queryString({ days, ...filters })}`)
+  return {
+    items: Array.isArray(data.items) ? data.items : [],
+    days: data.days || days,
+  }
+}

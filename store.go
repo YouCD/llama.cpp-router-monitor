@@ -726,3 +726,75 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSi
 	}
 	return query, args
 }
+
+// getDailyStats 按天聚合请求数与 token 用量。
+// 返回按日期升序排列的每日统计，覆盖最近 days 天。
+func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 365 {
+		days = 365
+	}
+
+	// 存储层 created_at 为 UTC 墙壁时间。按 +8 时区分组日期，
+	// 使 08:00 UTC 之前的请求归属到本地日期，避免跨天错位。
+	dateExpr := `date(created_at, '+8 hours')`
+	if s.isPostgres() {
+		dateExpr = `to_char((created_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')`
+	}
+
+	// 窗口起点：本地时区（+8）的 (days-1) 天前的零点，再转回 UTC 时刻用于过滤。
+	loc := time.FixedZone("CST", 8*3600)
+	localNow := time.Now().In(loc)
+	localStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day()-(days-1), 0, 0, 0, 0, loc)
+	since := localStart.UTC()
+	sinceVal := s.createdAtValue(since)
+
+	query := `SELECT
+		` + dateExpr + `,
+		COUNT(*),
+		COALESCE(SUM(prompt_tokens),0),
+		COALESCE(SUM(completion_tokens),0),
+		COALESCE(SUM(total_tokens),0),
+		COALESCE(SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END),0)
+		FROM requests
+		WHERE created_at >= ?`
+	args := []any{sinceVal}
+	query, args = appendRequestFilterSQL(query, args, f, false, s.isPostgres())
+	query += `
+		GROUP BY ` + dateExpr + `
+		ORDER BY ` + dateExpr + ` ASC`
+
+	rows, err := s.db.Query(s.rebind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]map[string]any, 0, days)
+	for rows.Next() {
+		var date string
+		var count, promptTok, completionTok, totalTok, okCount, err4xx, err5xx int64
+		if err := rows.Scan(&date, &count, &promptTok, &completionTok, &totalTok,
+			&okCount, &err4xx, &err5xx); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"date":              date,
+			"total_requests":    count,
+			"prompt_tokens":     promptTok,
+			"completion_tokens": completionTok,
+			"total_tokens":      totalTok,
+			"ok_requests":       okCount,
+			"err4xx":            err4xx,
+			"err5xx":            err5xx,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

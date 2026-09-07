@@ -38,6 +38,7 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 				"/_monitor/raw/{id}/{request|response}",
 				"/_monitor/events",
 				"/_monitor/backend-metrics?limit=200",
+				"/_monitor/daily-stats?days=30",
 				"/_monitor/ui",
 			},
 		})
@@ -76,6 +77,15 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items, "hours": hours})
+	case p == "/daily-stats":
+		days := getQueryInt(r, "days", 30)
+		f := parseRequestFilter(r)
+		items, err := s.getDailyStats(days, f)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "days": days})
 	case p == "/requests":
 		limit := getQueryInt(r, "limit", 100)
 		offset := getQueryInt(r, "offset", 0)

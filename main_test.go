@@ -870,6 +870,90 @@ func seedRequest(t *testing.T, svc *Server, rec RequestRecord) error {
 	return svc.finishRequest(rec.ID, rec)
 }
 
+func TestGetDailyStats(t *testing.T) {
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+
+	now := time.Now().UTC()
+	day0 := now.AddDate(0, 0, 0) // 今天
+	day1 := now.AddDate(0, 0, -1)
+	day2 := now.AddDate(0, 0, -2)
+
+	records := []RequestRecord{
+		// day2: 2 个请求，均为 200
+		{ID: "d2-1", CreatedAt: day2, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusOK, PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+		{ID: "d2-2", CreatedAt: day2, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusOK, PromptTokens: 5, CompletionTokens: 5, TotalTokens: 10},
+		// day1: 3 个请求：1 个 200、1 个 404、1 个 500
+		{ID: "d1-1", CreatedAt: day1, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusOK, PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100},
+		{ID: "d1-2", CreatedAt: day1, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusNotFound, PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
+		{ID: "d1-3", CreatedAt: day1, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusInternalServerError, PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
+		// day0: 1 个 200
+		{ID: "d0-1", CreatedAt: day0, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusOK, PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+	}
+	for _, rec := range records {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed %s: %v", rec.ID, err)
+		}
+	}
+
+	items, err := svc.getDailyStats(10, RequestFilter{})
+	if err != nil {
+		t.Fatalf("getDailyStats: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 daily rows, got %d: %+v", len(items), items)
+	}
+
+	byDate := make(map[string]map[string]any, len(items))
+	for _, it := range items {
+		byDate[it["date"].(string)] = it
+	}
+
+	// 分组按 +8 时区（Asia/Shanghai）取日期，断言使用同一时区
+	dayStr := func(tm time.Time) string {
+		return tm.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+	}
+
+	if it := byDate[dayStr(day2)]; it == nil {
+		t.Fatalf("missing day2 row: %+v", byDate)
+	} else {
+		if it["total_requests"].(int64) != 2 {
+			t.Errorf("day2 total_requests=%v", it["total_requests"])
+		}
+		if it["total_tokens"].(int64) != 40 {
+			t.Errorf("day2 total_tokens=%v", it["total_tokens"])
+		}
+		if it["ok_requests"].(int64) != 2 || it["err4xx"].(int64) != 0 || it["err5xx"].(int64) != 0 {
+			t.Errorf("day2 status counts=%v/%v/%v", it["ok_requests"], it["err4xx"], it["err5xx"])
+		}
+	}
+
+	if it := byDate[dayStr(day1)]; it == nil {
+		t.Fatalf("missing day1 row: %+v", byDate)
+	} else {
+		if it["total_requests"].(int64) != 3 {
+			t.Errorf("day1 total_requests=%v", it["total_requests"])
+		}
+		if it["total_tokens"].(int64) != 100 {
+			t.Errorf("day1 total_tokens=%v", it["total_tokens"])
+		}
+		if it["ok_requests"].(int64) != 1 || it["err4xx"].(int64) != 1 || it["err5xx"].(int64) != 1 {
+			t.Errorf("day1 status counts=%v/%v/%v", it["ok_requests"], it["err4xx"], it["err5xx"])
+		}
+	}
+
+	if it := byDate[dayStr(day0)]; it == nil {
+		t.Fatalf("missing day0 row: %+v", byDate)
+	} else {
+		if it["total_requests"].(int64) != 1 {
+			t.Errorf("day0 total_requests=%v", it["total_requests"])
+		}
+		if it["ok_requests"].(int64) != 1 || it["err4xx"].(int64) != 0 || it["err5xx"].(int64) != 0 {
+			t.Errorf("day0 status counts=%v/%v/%v", it["ok_requests"], it["err4xx"], it["err5xx"])
+		}
+	}
+}
+
 func TestGetBackendsDistinct(t *testing.T) {
 	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()

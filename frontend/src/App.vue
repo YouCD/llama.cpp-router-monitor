@@ -34,6 +34,11 @@
 
       <BackendStats :items="backendStats" :hours="statsHours" @select="onBackendSelect" />
 
+      <section class="daily-section">
+        <h2 class="daily-heading">{{ t('dailyTitle') }}</h2>
+        <DailyChart :items="dailyStats" />
+      </section>
+
       <FilterPanel ref="filterPanel" :models="models" :backends="backends" :quick-counts="quickCounts" @apply="onApply" />
 
       <RequestTable
@@ -59,13 +64,14 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import StatsCards from './components/StatsCards.vue'
 import BackendStats from './components/BackendStats.vue'
+import DailyChart from './components/DailyChart.vue'
 import FilterPanel from './components/FilterPanel.vue'
 import RequestTable from './components/RequestTable.vue'
 import RequestDrawer from './components/RequestDrawer.vue'
 import { currentLang, elementLocale, t, setLang } from './i18n'
 import {
   fetchStats, fetchRequests, fetchRequest, fetchModels, fetchBackends,
-  fetchStatsByBackend,
+  fetchStatsByBackend, fetchDailyStats,
 } from './api'
 import { fmtDate, statusBucket } from './utils'
 
@@ -79,6 +85,7 @@ const items = ref([])
 const backendStats = ref([])
 const models = ref([])
 const backends = ref([])
+const dailyStats = ref([])
 const outputSec = ref(0)
 const hasMore = ref(false)
 const loadingMore = ref(false)
@@ -176,6 +183,15 @@ async function loadBackendStats() {
   }
 }
 
+async function loadDailyStats() {
+  try {
+    const data = await fetchDailyStats(30, filters)
+    dailyStats.value = data.items || []
+  } catch {
+    /* ignore */
+  }
+}
+
 async function loadOptions() {
   try {
     models.value = await fetchModels()
@@ -186,7 +202,7 @@ async function loadOptions() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStats(), loadRequests(), loadBackendStats()])
+  await Promise.all([loadStats(), loadRequests(), loadBackendStats(), loadDailyStats()])
 }
 
 function onApply(f) {

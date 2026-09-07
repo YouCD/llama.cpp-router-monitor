@@ -21,6 +21,13 @@ export default defineConfig(({ mode }) => ({
     outDir: '../web',
     emptyOutDir: true,
     assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          echarts: ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,
