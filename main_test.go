@@ -129,7 +129,7 @@ func TestHandleProxyNonStreamingLlamaCppJSON(t *testing.T) {
 		t.Fatalf("unexpected response body: %s", string(body))
 	}
 
-	listResp, err := proxy.Client().Get(proxy.URL + "/_monitor/requests?limit=10")
+	listResp, err := proxy.Client().Get(proxy.URL + "/_proxy/requests?limit=10")
 	if err != nil {
 		t.Fatalf("get requests: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestHandleProxyStreamingLifecycle(t *testing.T) {
 	var liveID string
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(proxy.URL + "/_monitor/requests?limit=10")
+		resp, err := client.Get(proxy.URL + "/_proxy/requests?limit=10")
 		if err != nil {
 			t.Fatalf("load live requests: %v", err)
 		}
@@ -250,7 +250,7 @@ func TestHandleProxyStreamingLifecycle(t *testing.T) {
 		t.Fatal("proxy request did not finish")
 	}
 
-	resp, err := client.Get(proxy.URL + "/_monitor/request/" + liveID)
+	resp, err := client.Get(proxy.URL + "/_proxy/request/" + liveID)
 	if err != nil {
 		t.Fatalf("load final request: %v", err)
 	}
@@ -809,7 +809,7 @@ func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) 
 	sqlCfg := DatabaseConfig{
 		Type: "sqlite",
 		SQLite: SQLiteConfig{
-			Path: "monitor.db",
+			Path: "proxy.db",
 		},
 	}
 	db, err := NewDatabase(sqlCfg, dataDir)

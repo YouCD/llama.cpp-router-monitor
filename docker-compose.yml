@@ -1,10 +1,10 @@
 services:
-  llama-cpp-router-monitor:
+  llama-proxy:
     build:
       context: .
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
-    container_name: llama-cpp-router-monitor
+    container_name: llama-proxy
     ports:
       - "9091:9091"
     volumes:
@@ -18,11 +18,11 @@ services:
   # 可选：PostgreSQL 数据库服务
   # postgres:
   #   image: postgres:16-alpine
-  #   container_name: llama-cpp-router-monitor-pg
+  #   container_name: llama-proxy-pg
   #   environment:
-  #     - POSTGRES_USER=monitor
-  #     - POSTGRES_PASSWORD=monitor
-  #     - POSTGRES_DB=monitor
+  #     - POSTGRES_USER=proxy
+  #     - POSTGRES_PASSWORD=proxy
+  #     - POSTGRES_DB=proxy
   #   volumes:
   #     - pgdata:/var/lib/postgresql/data
   #   restart: unless-stopped

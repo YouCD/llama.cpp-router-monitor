@@ -245,7 +245,7 @@ function scheduleEventRefresh() {
 }
 
 function connectEvents() {
-  eventSource = new EventSource('/_monitor/events')
+  eventSource = new EventSource('/_proxy/events')
   eventSource.onopen = () => setLive('live', t('liveConnected'))
   eventSource.onerror = () => setLive('retry', t('reconnecting'))
   eventSource.addEventListener('request', scheduleEventRefresh)

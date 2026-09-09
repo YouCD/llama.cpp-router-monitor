@@ -15,5 +15,5 @@ web/
 Thumbs.db
 config.yaml
 .idea
-llama-cpp-router-monitor
+llama-proxy
 llama_proxy

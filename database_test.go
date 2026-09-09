@@ -9,14 +9,14 @@ import (
 )
 
 func TestParsePostgresKVURL(t *testing.T) {
-	kv, err := parsePostgresKV("postgres://user:pass@localhost:5432/monitor?sslmode=disable")
+	kv, err := parsePostgresKV("postgres://user:pass@localhost:5432/proxy?sslmode=disable")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if kv["user"] != "user" {
 		t.Fatalf("user=%q", kv["user"])
 	}
-	if kv["dbname"] != "monitor" {
+	if kv["dbname"] != "proxy" {
 		t.Fatalf("dbname=%q", kv["dbname"])
 	}
 	if kv["sslmode"] != "disable" {
@@ -45,7 +45,7 @@ func TestPgDatabaseName(t *testing.T) {
 		dsn  string
 		want string
 	}{
-		{"postgres://user:pass@localhost:5432/monitor?sslmode=disable", "monitor"},
+		{"postgres://user:pass@localhost:5432/proxy?sslmode=disable", "proxy"},
 		{"host=localhost dbname=appdb user=u", "appdb"},
 		{"host=localhost database=legacydb user=u", "legacydb"},
 		{"host=localhost user=u", ""},
@@ -62,7 +62,7 @@ func TestPgDatabaseName(t *testing.T) {
 }
 
 func TestPgAdminDSN(t *testing.T) {
-	dsn, err := pgAdminDSN("postgres://user:pass@localhost:5432/monitor?sslmode=disable")
+	dsn, err := pgAdminDSN("postgres://user:pass@localhost:5432/proxy?sslmode=disable")
 	if err != nil {
 		t.Fatalf("pgAdminDSN: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestIsMissingDatabaseError(t *testing.T) {
 }
 
 func TestPgAdminDSNQuotesSpecialValue(t *testing.T) {
-	dsn, err := pgAdminDSN("host=localhost user=u password='p w' dbname=monitor sslmode=disable")
+	dsn, err := pgAdminDSN("host=localhost user=u password='p w' dbname=proxy sslmode=disable")
 	if err != nil {
 		t.Fatalf("pgAdminDSN: %v", err)
 	}

@@ -42,7 +42,7 @@ backends:
       weight: 20
       enabled: true
 
-monitor:
+proxy:
   retention_days: 30
   max_request_bytes: 1048576
   max_capture_bytes: 1048576
@@ -77,10 +77,10 @@ monitor:
 	if len(cfg.Backends.List) != 3 {
 		t.Fatalf("backends=%d", len(cfg.Backends.List))
 	}
-	if cfg.Monitor.RetentionDays != 30 {
-		t.Fatalf("retention_days=%d", cfg.Monitor.RetentionDays)
+	if cfg.Proxy.RetentionDays != 30 {
+		t.Fatalf("retention_days=%d", cfg.Proxy.RetentionDays)
 	}
-	if cfg.Monitor.PollBackendMetrics != nil && *cfg.Monitor.PollBackendMetrics {
+	if cfg.Proxy.PollBackendMetrics != nil && *cfg.Proxy.PollBackendMetrics {
 		t.Fatal("poll_backend_metrics should be false")
 	}
 
@@ -99,7 +99,7 @@ func TestLoadYAMLConfigDefaults(t *testing.T) {
 	content := `server: {}
 database: {}
 backends: {}
-monitor: {}
+proxy: {}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -119,14 +119,14 @@ monitor: {}
 	if cfg.Backends.Strategy != "wrr" {
 		t.Fatalf("strategy=%q", cfg.Backends.Strategy)
 	}
-	if cfg.Monitor.RetentionDays != 14 {
-		t.Fatalf("retention_days=%d", cfg.Monitor.RetentionDays)
+	if cfg.Proxy.RetentionDays != 14 {
+		t.Fatalf("retention_days=%d", cfg.Proxy.RetentionDays)
 	}
-	if !(cfg.Monitor.PollBackendMetrics != nil && *cfg.Monitor.PollBackendMetrics) {
-		t.Fatal("poll_backend_metrics should default to true")
+	if !(cfg.Proxy.PollBackendMetrics != nil && *cfg.Proxy.PollBackendMetrics) {
+		t.Fatalf("expected poll_backend_metrics=true")
 	}
-	if cfg.Monitor.PollInterval != 10 {
-		t.Fatalf("poll_interval=%d", cfg.Monitor.PollInterval)
+	if cfg.Proxy.PollInterval != 10 {
+		t.Fatalf("poll_interval=%d", cfg.Proxy.PollInterval)
 	}
 }
 
@@ -395,7 +395,7 @@ func TestHandleProxyWithModelRewriteAndAPIKey(t *testing.T) {
 	defer backend.Close()
 
 	dataDir := t.TempDir()
-	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "monitor.db"}}
+	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
 	db, err := NewDatabase(sqlCfg, dataDir)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -459,7 +459,7 @@ func TestHandleProxyBackendKeyDoesNotOverrideClientKeyWhenEmpty(t *testing.T) {
 	defer backend.Close()
 
 	dataDir := t.TempDir()
-	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "monitor.db"}}
+	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
 	db, err := NewDatabase(sqlCfg, dataDir)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -519,7 +519,7 @@ func TestHandleProxyStripsVersionPrefixWhenBackendHasV1(t *testing.T) {
 	defer backend.Close()
 
 	dataDir := t.TempDir()
-	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "monitor.db"}}
+	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
 	db, err := NewDatabase(sqlCfg, dataDir)
 	if err != nil {
 		t.Fatalf("open db: %v", err)

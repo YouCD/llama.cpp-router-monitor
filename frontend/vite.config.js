@@ -5,7 +5,7 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 export default defineConfig(({ mode }) => ({
-  base: mode === 'development' ? '/' : '/_monitor/ui/',
+  base: mode === 'development' ? '/' : '',
   plugins: [
     vue(),
     AutoImport({
@@ -32,7 +32,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5173,
     proxy: {
-      '/_monitor': {
+      '/': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },

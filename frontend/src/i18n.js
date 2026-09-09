@@ -6,8 +6,8 @@ export const LANG_KEY = 'llama-proxy.lang'
 
 const messages = {
   zh: {
-    appTitle: 'llama.cpp 路由器监控',
-    heroText: '本地 llama.cpp 流量的轻量级监控面板。',
+    appTitle: 'llama_proxy',
+    heroText: '本地 llama_proxy 流量的轻量级代理面板。',
     cards: '卡片',
     strip: '条形',
     lastUpdate: '最后更新',
@@ -165,8 +165,8 @@ const messages = {
     el: zhCn,
   },
   en: {
-    appTitle: 'llama.cpp Router Monitor',
-    heroText: 'A lightweight monitoring dashboard for local llama.cpp traffic.',
+    appTitle: 'llama_proxy',
+    heroText: 'A lightweight proxy dashboard for local llama_proxy traffic.',
     cards: 'Cards',
     strip: 'Strip',
     lastUpdate: 'Last update',

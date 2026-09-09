@@ -18,23 +18,23 @@ export function queryString(obj) {
 
 export async function fetchStats(filters) {
   const hours = Number.parseInt(filters.since_hours || '1', 10) || 1
-  return fetchJSON(`/_monitor/stats?${queryString({ hours, ...filters })}`)
+  return fetchJSON(`/_proxy/stats?${queryString({ hours, ...filters })}`)
 }
 
 export async function fetchRequests(limit, offset, filters) {
-  return fetchJSON(`/_monitor/requests?${queryString({ limit, offset, ...filters })}`)
+  return fetchJSON(`/_proxy/requests?${queryString({ limit, offset, ...filters })}`)
 }
 
 export async function fetchRequest(id) {
-  return fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`)
+  return fetchJSON(`/_proxy/request/${encodeURIComponent(id)}`)
 }
 
 export async function deleteRequest(id) {
-  return fetchJSON(`/_monitor/request/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  return fetchJSON(`/_proxy/request/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export async function fetchRaw(id, part) {
-  const resp = await fetch(`/_monitor/raw/${encodeURIComponent(id)}/${part}`)
+  const resp = await fetch(`/_proxy/raw/${encodeURIComponent(id)}/${part}`)
   if (!resp.ok) {
     return null
   }
@@ -47,22 +47,22 @@ export async function fetchRaw(id, part) {
 }
 
 export async function fetchModels() {
-  const data = await fetchJSON('/_monitor/models')
+  const data = await fetchJSON('/_proxy/models')
   return Array.isArray(data.items) ? data.items : []
 }
 
 export async function fetchBackends() {
-  const data = await fetchJSON('/_monitor/backends')
+  const data = await fetchJSON('/_proxy/backends')
   return Array.isArray(data.items) ? data.items : []
 }
 
 export async function fetchStatsByBackend(hours) {
-  const data = await fetchJSON(`/_monitor/stats-by-backend?${queryString({ hours })}`)
+  const data = await fetchJSON(`/_proxy/stats-by-backend?${queryString({ hours })}`)
   return Array.isArray(data.items) ? data.items : []
 }
 
 export async function fetchDailyStats(days, filters = {}) {
-  const data = await fetchJSON(`/_monitor/daily-stats?${queryString({ days, ...filters })}`)
+  const data = await fetchJSON(`/_proxy/daily-stats?${queryString({ days, ...filters })}`)
   return {
     items: Array.isArray(data.items) ? data.items : [],
     days: data.days || days,

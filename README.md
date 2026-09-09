@@ -1,4 +1,4 @@
-# llama.cpp Router Monitor
+# llama_proxy
 
 [![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
@@ -6,15 +6,15 @@
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-local%20LLM-111111)](https://github.com/ggml-org/llama.cpp)
 [![Streaming](https://img.shields.io/badge/SSE-streaming-1f6feb)](#what-it-does)
 
-Monitor and inspect all traffic going through your local `llama.cpp` server.
+Proxy and inspect all traffic going through your local `llama.cpp` server.
 
-Lightweight reverse proxy and monitoring UI for `llama.cpp` and OpenAI-compatible local inference servers.
+Lightweight reverse proxy and dashboard for `llama.cpp` and OpenAI-compatible local inference servers.
 
 It sits in front of your inference server, logs every request, stores raw payloads, measures latency and token throughput, and gives you a live web UI.
 
 ## What This Is For
 
-`llama.cpp Router Monitor` is a tool for tracking **all requests to a local LLM** in a way that is easy to inspect, filter, and debug.
+`llama_proxy` is a tool for tracking **all requests to a local LLM** in a way that is easy to inspect, filter, and debug.
 
 It is useful when you want to:
 
@@ -34,7 +34,7 @@ It is useful when you want to:
 
 ## What It Does
 
-- Reverse-proxies requests to your `llama.cpp` server
+- Reverse-proxies requests to your `llama.cpp` backend
 - Captures request and response payloads
 - Stores request history in SQLite
 - Tracks:
@@ -100,7 +100,7 @@ docker compose up -d --build
 ### 3. Open the UI
 
 ```text
-http://localhost:9091/_monitor/ui
+http://localhost:9091/_proxy/ui
 ```
 
 ### 4. Point your client to the proxy
@@ -157,7 +157,7 @@ backends:
 ### 3. Open the UI
 
 ```text
-http://localhost:9091/_monitor/ui
+http://localhost:9091/_proxy/ui
 ```
 
 > The GHCR package is **private** by default after the first build. To pull it
@@ -233,7 +233,7 @@ git clone https://github.com/dannychirkov/llama.cpp-router-monitor && cd llama-c
 The proxy keeps your existing API flow:
 
 ```text
-client -> llama.cpp Router Monitor -> llama.cpp
+client -> llama_proxy -> llama.cpp
 ```
 
 It does not replace your inference server. It only sits in front of it.
@@ -268,10 +268,10 @@ X-Backend-URL: http://host.docker.internal:8081
 
 Local data is stored in `./data`:
 
-- `monitor.db` - SQLite database
+- `proxy.db` - SQLite database
 - `raw/YYYY-MM-DD/*.gz` - raw request/response payloads
 
-Old data is deleted automatically after `monitor.retention_days`.
+The data is cleaned automatically after `retention_days`.
 
 If you want to keep everything indefinitely, set `retention_days: 0` in the YAML config:
 
@@ -284,17 +284,17 @@ monitor:
 
 ## API Endpoints
 
-- `GET /_monitor/health`
-- `GET /_monitor/live`
-- `GET /_monitor/stats?hours=24`
-- `GET /_monitor/requests?limit=100&offset=0`
-- `GET /_monitor/request/{id}`
-- `DELETE /_monitor/request/{id}`
-- `GET /_monitor/raw/{id}/request`
-- `GET /_monitor/raw/{id}/response`
-- `GET /_monitor/events`
-- `GET /_monitor/backend-metrics?limit=200`
-- `GET /_monitor/ui`
+- `GET /health`
+- `GET /live`
+- `GET /stats?hours=24`
+- `GET /requests?limit=100&offset=0`
+- `GET /request/{id}`
+- `DELETE /request/{id}`
+- `GET /raw/{id}/request`
+- `GET /raw/{id}/response`
+- `GET /events`
+- `GET /backend-metrics?limit=200`
+- `GET /ui`
 - `GET /v1/models` — OpenAI-compatible model list, answered by the router itself (not forwarded)
 
 Supported request filters:
@@ -319,7 +319,7 @@ curl http://localhost:9091/v1/chat/completions \
 
 ## Configuration
 
-The monitor is configured exclusively via a YAML configuration file.
+This proxy is configured exclusively via a YAML configuration file.
 
 Backends are configured via `backends.list` in the YAML file.
 
@@ -335,9 +335,9 @@ server:
 database:
   type: "sqlite"              # sqlite | postgresql
   sqlite:
-    path: "monitor.db"
+    path: "proxy.db"
   postgresql:
-    dsn: "postgres://user:pass@localhost:5432/monitor?sslmode=disable"
+    dsn: "postgres://user:pass@localhost:5432/proxy?sslmode=disable"
 
 backends:
   allow_dynamic: true
@@ -370,13 +370,13 @@ monitor:
 
 ### PostgreSQL Database
 
-The monitor uses SQLite by default. To use PostgreSQL, use the `database` section in the YAML file:
+This proxy uses SQLite by default. To use PostgreSQL, use the `database` section in the YAML file:
 
 ```yaml
 database:
   type: postgresql
   postgresql:
-    dsn: "postgres://user:password@localhost:5432/monitor?sslmode=disable"
+    dsn: "postgres://user:password@localhost:5432/proxy?sslmode=disable"
 ```
 
 On startup the monitor:
@@ -407,15 +407,15 @@ Per-request overrides still take priority over the balancer:
 
 To keep it lean:
 
-- keep `monitor.max_capture_bytes` reasonable, for example `8MB` to `32MB`
-- disable backend metrics polling if you do not need it: `monitor.poll_backend_metrics: false`
-- increase `monitor.poll_interval_seconds` if `/metrics` does not need frequent polling
+- keep `proxy.max_capture_bytes` reasonable, for example `8MB` to `32MB`
+- disable backend metrics polling if you do not need it: `proxy.poll_backend_metrics: false`
+- increase `proxy.poll_interval_seconds` if `/metrics` does not need frequent polling
 
 ## Limitations
 
 - some token and timing fields depend on what your backend actually returns
 - raw payload capture can use noticeable disk space if retention is high
-- this is a lightweight local monitor, not a full observability platform
+- this is a lightweight local proxy, not a full observability platform
 
 ## Roadmap
 

@@ -12,14 +12,14 @@ import (
 )
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/_monitor") {
-		s.handleMonitor(w, r)
+	if strings.HasPrefix(r.URL.Path, "/_proxy") {
+	s.handleMonitor(w, r)
 		return
 	}
 	s.handleProxy(w, r)
 }
 func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
-	p := strings.TrimPrefix(r.URL.Path, "/_monitor")
+	p := strings.TrimPrefix(r.URL.Path, "/_proxy")
 	if p == "" {
 		p = "/"
 	}
@@ -27,22 +27,22 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "/":
 		writeJSON(w, http.StatusOK, map[string]any{
-			"name":    "llama.cpp Router Monitor",
+			"name":    "llama_proxy",
 			"version": "1.0.0",
 			"endpoints": []string{
-				"/_monitor/health",
-				"/_monitor/live",
-				"/_monitor/stats?hours=24",
-				"/_monitor/requests?limit=100&offset=0",
-				"/_monitor/request/{id}",
-				"/_monitor/raw/{id}/{request|response}",
-				"/_monitor/events",
-				"/_monitor/backend-metrics?limit=200",
-				"/_monitor/daily-stats?days=30",
-				"/_monitor/ui",
+				"/_proxy/health",
+				"/_proxy/live",
+				"/_proxy/stats?hours=24",
+				"/_proxy/requests?limit=100&offset=0",
+				"/_proxy/request/{id}",
+				"/_proxy/raw/{id}/{request|response}",
+				"/_proxy/events",
+				"/_proxy/backend-metrics?limit=200",
+				"/_proxy/daily-stats?days=30",
+				"/_proxy/ui",
 			},
 		})
-	case p == "/ui" || strings.HasPrefix(p, "/ui/"):
+	case p == "/ui" || strings.HasPrefix(p, "/ui/") || strings.HasPrefix(p, "/assets/"):
 		s.handleUI(w, r, p)
 	case p == "/health":
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": time.Now().UTC(), "active_connections": s.active.Load()})
@@ -161,7 +161,7 @@ func parseRequestFilter(r *http.Request) RequestFilter {
 func (s *Server) handleRaw(w http.ResponseWriter, p string) {
 	parts := strings.Split(strings.TrimPrefix(p, "/raw/"), "/")
 	if len(parts) != 2 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "use /_monitor/raw/{request_id}/{request|response}"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "use /_proxy/raw/{request_id}/{request|response}"})
 		return
 	}
 
@@ -254,7 +254,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data": []obj{
-			{ID: "llm_prox", Object: "model", Created: time.Now().Unix(), OwnedBy: "llama-cpp-router-monitor"},
+			{ID: "llm_prox", Object: "model", Created: time.Now().Unix(), OwnedBy: "llama_proxy"},
 		},
 	})
 }

@@ -4,9 +4,11 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"mime"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 )
@@ -17,21 +19,33 @@ var webFS embed.FS
 // handleUI serves the frontend embedded into the binary.
 // Enabled by building with `go build -tags embedweb`.
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
-	rel := strings.TrimPrefix(p, "/ui")
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	name := "web/index.html"
-	if rel != "" && rel != "/" {
-		clean := path.Clean(strings.TrimPrefix(rel, "/"))
+	var name string
+	if p == "/ui" || p == "/" {
+		name = "web/index.html"
+	} else if strings.HasPrefix(p, "/ui/") {
+		clean := path.Clean(strings.TrimPrefix(p, "/ui"))
 		if strings.Contains(clean, "..") {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
 			return
 		}
 		name = path.Join("web", clean)
+	} else if strings.HasPrefix(p, "/assets/") {
+		clean := path.Clean(p)
+		if strings.Contains(clean, "..") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
+			return
+		}
+		name = path.Join("web", clean)
+	} else {
+		name = "web/index.html"
 	}
 
 	data, err := fs.ReadFile(webFS, name)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "handleUI: failed to read %s: %v\n", name, err)
 		http.NotFound(w, r)
 		return
 	}

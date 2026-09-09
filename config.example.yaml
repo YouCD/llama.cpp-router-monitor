@@ -1,4 +1,4 @@
-# llama.cpp Router Monitor 配置文件
+# llama_proxy 配置文件
 
 server:
   listen_addr: ":9091"
@@ -7,9 +7,9 @@ server:
 database:
   type: "sqlite"  # sqlite 或 postgresql
   sqlite:
-    path: "monitor.db"
+    path: "proxy.db"
   postgresql:
-    dsn: "postgres://user:password@localhost:5432/monitor?sslmode=disable"
+    dsn: "postgres://user:password@localhost:5432/proxy?sslmode=disable"
     max_open_conns: 25
     max_idle_conns: 5
     conn_max_lifetime_seconds: 300
@@ -35,7 +35,7 @@ backends:
       weight: 20
       enabled: true
 
-monitor:
+proxy:
   retention_days: 14
   max_request_bytes: 33554432  # 32MB
   max_capture_bytes: 33554432  # 32MB

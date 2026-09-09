@@ -1,4 +1,4 @@
-# llama.cpp Router Monitor
+# llama_proxy
 #
 # 两种构建模式:
 #   make build         纯二进制（不嵌入前端，前端从 web/ 目录读取，部署需带上 web/）

@@ -11,7 +11,7 @@ type YAMLConfig struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	Backends BackendsConfig `yaml:"backends"`
-	Monitor  MonitorConfig  `yaml:"monitor"`
+	Proxy    ProxyConfig    `yaml:"proxy"`
 }
 
 type ServerConfig struct {
@@ -51,7 +51,7 @@ type BackendConfig struct {
 	APIKey  string `yaml:"api_key"`
 }
 
-type MonitorConfig struct {
+type ProxyConfig struct {
 	RetentionDays      int      `yaml:"retention_days"`
 	MaxRequestBytes    int      `yaml:"max_request_bytes"`
 	MaxCaptureBytes    int      `yaml:"max_capture_bytes"`
@@ -88,7 +88,7 @@ func setConfigDefaults(cfg *YAMLConfig) {
 		cfg.Database.Type = "sqlite"
 	}
 	if cfg.Database.SQLite.Path == "" {
-		cfg.Database.SQLite.Path = "monitor.db"
+		cfg.Database.SQLite.Path = "proxy.db"
 	}
 	if cfg.Database.PostgreSQL.MaxOpenConns == 0 {
 		cfg.Database.PostgreSQL.MaxOpenConns = 25
@@ -102,27 +102,27 @@ func setConfigDefaults(cfg *YAMLConfig) {
 	if cfg.Backends.Strategy == "" {
 		cfg.Backends.Strategy = "wrr"
 	}
-	if cfg.Monitor.RetentionDays == 0 {
-		cfg.Monitor.RetentionDays = 14
+	if cfg.Proxy.RetentionDays == 0 {
+		cfg.Proxy.RetentionDays = 14
 	}
-	if cfg.Monitor.MaxRequestBytes == 0 {
-		cfg.Monitor.MaxRequestBytes = 32 * 1024 * 1024
+	if cfg.Proxy.MaxRequestBytes == 0 {
+		cfg.Proxy.MaxRequestBytes = 32 * 1024 * 1024
 	}
-	if cfg.Monitor.MaxCaptureBytes == 0 {
-		cfg.Monitor.MaxCaptureBytes = 32 * 1024 * 1024
+	if cfg.Proxy.MaxCaptureBytes == 0 {
+		cfg.Proxy.MaxCaptureBytes = 32 * 1024 * 1024
 	}
-	if cfg.Monitor.RequestTimeout == 0 {
-		cfg.Monitor.RequestTimeout = 600
+	if cfg.Proxy.RequestTimeout == 0 {
+		cfg.Proxy.RequestTimeout = 600
 	}
-	if cfg.Monitor.PollInterval == 0 {
-		cfg.Monitor.PollInterval = 10
+	if cfg.Proxy.PollInterval == 0 {
+		cfg.Proxy.PollInterval = 10
 	}
-	if cfg.Monitor.PollBackendMetrics == nil {
+	if cfg.Proxy.PollBackendMetrics == nil {
 		v := true
-		cfg.Monitor.PollBackendMetrics = &v
+		cfg.Proxy.PollBackendMetrics = &v
 	}
-	if len(cfg.Monitor.RecordPaths) == 0 {
-		cfg.Monitor.RecordPaths = []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"}
+	if len(cfg.Proxy.RecordPaths) == 0 {
+		cfg.Proxy.RecordPaths = []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"}
 	}
 
 	for i := range cfg.Backends.List {
@@ -140,13 +140,13 @@ func (c *YAMLConfig) toLegacyConfig() Config {
 		ListenAddr:          c.Server.ListenAddr,
 		AllowDynamicBackend: c.Backends.AllowDynamic,
 		DataDir:             c.Server.DataDir,
-		RetentionDays:       c.Monitor.RetentionDays,
-		MaxRequestBytes:     int64(c.Monitor.MaxRequestBytes),
-		MaxCaptureBytes:     int64(c.Monitor.MaxCaptureBytes),
-		RequestTimeout:      time.Duration(c.Monitor.RequestTimeout) * time.Second,
-		PollBackendMetrics:  c.Monitor.PollBackendMetrics != nil && *c.Monitor.PollBackendMetrics,
-		PollInterval:        time.Duration(c.Monitor.PollInterval) * time.Second,
-		RecordPaths:         c.Monitor.RecordPaths,
+		RetentionDays:       c.Proxy.RetentionDays,
+		MaxRequestBytes:     int64(c.Proxy.MaxRequestBytes),
+		MaxCaptureBytes:     int64(c.Proxy.MaxCaptureBytes),
+		RequestTimeout:      time.Duration(c.Proxy.RequestTimeout) * time.Second,
+		PollBackendMetrics:  c.Proxy.PollBackendMetrics != nil && *c.Proxy.PollBackendMetrics,
+		PollInterval:        time.Duration(c.Proxy.PollInterval) * time.Second,
+		RecordPaths:         c.Proxy.RecordPaths,
 	}
 }
 

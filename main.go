@@ -97,7 +97,7 @@ func main() {
 	if s.balancer != nil {
 		backendCount = s.balancer.GetEnabledCount()
 	}
-	log.WithCtx(ctx).Infof("llama.cpp Router Monitor listening on %s, backends=%d", cfg.ListenAddr, backendCount)
+	log.WithCtx(ctx).Infof("llama_proxy listening on %s, backends=%d", cfg.ListenAddr, backendCount)
 
 	server := &http.Server{Addr: cfg.ListenAddr, Handler: s}
 	// 优雅起停时先断开 SSE 长连接，避免 Shutdown 傻等监控页面连接直到超时。

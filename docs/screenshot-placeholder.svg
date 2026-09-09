@@ -28,6 +28,6 @@
     <text x="800" y="432" text-anchor="middle">Replace this placeholder with a real UI screenshot</text>
   </g>
   <g fill="#96a3b3" font-family="Consolas, monospace" font-size="20">
-    <text x="800" y="472" text-anchor="middle">llama.cpp Router Monitor</text>
+    <text x="800" y="472" text-anchor="middle">llama_proxy</text>
   </g>
 </svg>
