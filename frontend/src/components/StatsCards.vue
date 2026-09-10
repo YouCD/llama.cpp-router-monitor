@@ -1,22 +1,19 @@
 <template>
   <div class="stats-groups">
-    <section class="stats-group" v-for="g in groups" :key="g.title">
-      <div class="group-title">{{ g.title }}</div>
-      <div class="stats-grid">
-        <div
-          class="stat-card"
-          :class="{ featured: c.featured, [c.tone]: !!c.tone }"
-          v-for="c in g.cards"
-          :key="c.key"
-        >
-          <div class="label">{{ c.label }}</div>
-          <div class="value">
-            <AnimatedNumber :value="c.value" :format="c.format" :step="c.step || 0" />
-          </div>
-          <div class="foot" :title="c.foot">{{ c.foot }}</div>
+    <div class="stats-grid">
+      <div
+        class="stat-card"
+        :class="{ featured: c.featured, [c.tone]: !!c.tone }"
+        v-for="c in allCards"
+        :key="c.key"
+      >
+        <div class="label">{{ c.label }}</div>
+        <div class="value">
+          <AnimatedNumber :value="c.value" :format="c.format" :step="c.step || 0" />
         </div>
+        <div class="foot" :title="c.foot">{{ c.foot }}</div>
       </div>
-    </section>
+    </div>
   </div>
 </template>
 
@@ -78,4 +75,14 @@ const groups = computed(() => {
     },
   ]
 })
+
+const allCards = computed(() => groups.value.flatMap(g => g.cards))
 </script>
+
+<style scoped>
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+</style>

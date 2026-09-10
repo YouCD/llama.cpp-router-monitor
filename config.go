@@ -59,6 +59,7 @@ type ProxyConfig struct {
 	PollBackendMetrics *bool    `yaml:"poll_backend_metrics"`
 	PollInterval       int      `yaml:"poll_interval_seconds"`
 	RecordPaths        []string `yaml:"record_paths"`
+	APIKey             string   `yaml:"api_key"` // 客户端访问 proxy 的 API Key，与后端 api_key 隔离
 }
 
 func loadYAMLConfig(path string) (*YAMLConfig, error) {
@@ -147,6 +148,7 @@ func (c *YAMLConfig) toLegacyConfig() Config {
 		PollBackendMetrics:  c.Proxy.PollBackendMetrics != nil && *c.Proxy.PollBackendMetrics,
 		PollInterval:        time.Duration(c.Proxy.PollInterval) * time.Second,
 		RecordPaths:         c.Proxy.RecordPaths,
+		APIKey:              c.Proxy.APIKey,
 	}
 }
 

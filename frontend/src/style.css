@@ -135,13 +135,16 @@ body {
 
 /* 指标卡片（分组） */
 .stats-groups {
-  margin-bottom: 4px;
+  margin-bottom: 16px;
+}
+.stats-row {
+  display: flex;
+  gap: 16px;
 }
 .stats-group {
-  margin-bottom: 18px;
-}
-.stats-group:last-child {
-  margin-bottom: 8px;
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
 }
 .group-title {
   font-size: 11px;
@@ -153,7 +156,7 @@ body {
 }
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 12px;
 }
 

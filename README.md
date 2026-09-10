@@ -356,7 +356,8 @@ backends:
       model: "deepseek"       # 后端实际部署的模型 ID
       api_key: "secret-2"
 
-monitor:
+proxy:
+  api_key: "client-secret"    # 客户端访问 proxy 的 API Key（与后端 api_key 隔离）
   retention_days: 14
   max_request_bytes: 33554432
   max_capture_bytes: 33554432
@@ -396,7 +397,29 @@ When `backends.list` is configured, requests are routed across enabled backends 
 Per-backend options:
 
 - `model` - the model ID the backend actually serves. When set, the proxy rewrites the `model` field in the request body to this value before forwarding. Example: backend `gpu-server-1` serves `qwen`, `gpu-server-2` serves `deepseek` - each request is rewritten to the model of the chosen backend.
-- `api_key` - the backend's API key. When set, the proxy injects `Authorization: Bearer <api_key>` on the request to that backend. Without it, the client's `Authorization` header passes through unchanged.
+- `api_key` - the backend's API key. When set, the proxy injects `Authorization: Bearer <api_key}` on the request to that backend. Without it, the client's `Authorization` header passes through unchanged.
+
+### 客户端 API Key（`proxy.api_key`）
+
+在 `proxy.api_key` 配置后，所有客户端请求需在 header 中携带 `Authorization: Bearer <key>`，否则返回 401。该 key 与后端 `api_key` 相互隔离，互不依赖。
+
+- 不配置（空值）→ 无客户端鉴权（兼容旧版行为）
+- 配置了 → 客户端必须携带正确 API Key
+
+**客户端请求示例：**
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer client-secret-2024" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8","messages":[{"role":"user","content":"hi"}]}'
+```
+
+**代理内部隔离：**
+
+```
+客户端 ── Bearer <client_key> ──► llm_proxy ── Bearer <backend_key> ──► 后端 LLM
+```
 
 Per-request overrides still take priority over the balancer:
 

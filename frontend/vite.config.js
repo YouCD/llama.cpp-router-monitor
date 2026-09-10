@@ -32,7 +32,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5173,
     proxy: {
-      '/': {
+      '/_proxy': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },

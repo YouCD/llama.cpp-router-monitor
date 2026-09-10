@@ -19,6 +19,14 @@ import (
 )
 
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
+	// 校验客户端 API Key（如果已配置）
+	if s.cfg.APIKey != "" {
+		clientAuth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if clientAuth != "Bearer "+s.cfg.APIKey {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized", "message": "missing or invalid api_key"})
+			return
+		}
+	}
 	if r.URL.Path == "/v1/models" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		s.handleModels(w, r)
 		return
