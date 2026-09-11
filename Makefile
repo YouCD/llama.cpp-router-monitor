@@ -15,7 +15,7 @@ VERSION      ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 all: fmt vet build
 
 frontend-build:
-	cd frontend && npm run build
+	cd frontend && npm run build:pro
 
 # 纯二进制（不嵌入前端）
 build:

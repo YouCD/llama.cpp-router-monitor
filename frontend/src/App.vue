@@ -2,9 +2,12 @@
   <el-config-provider :locale="locale">
     <div class="app-shell">
       <header class="app-header">
-        <div>
-          <h1 class="title">{{ t('appTitle') }}</h1>
-          <p class="subtitle">{{ t('heroText') }}</p>
+        <div class="header-left">
+          <img class="header-logo" src="/favicon.svg" alt="logo" />
+          <div>
+            <h1 class="title">{{ t('appTitle') }}</h1>
+            <p class="subtitle">{{ t('heroText') }}</p>
+          </div>
         </div>
         <div class="header-actions">
           <span :class="'live-dot ' + liveState"></span>
@@ -245,7 +248,7 @@ function scheduleEventRefresh() {
 }
 
 function connectEvents() {
-  eventSource = new EventSource('/_proxy/events')
+  eventSource = new EventSource(`${API_PROXY}events`)
   eventSource.onopen = () => setLive('live', t('liveConnected'))
   eventSource.onerror = () => setLive('retry', t('reconnecting'))
   eventSource.addEventListener('request', scheduleEventRefresh)

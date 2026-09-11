@@ -467,7 +467,27 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 func (s *Server) getModels() ([]string, error) {
 	orderSQL := `ORDER BY model COLLATE NOCASE ASC`
 	if s.isPostgres() {
-		orderSQL = `ORDER BY lower(model) ASC`
+		rows, err := s.db.Query(`SELECT DISTINCT model FROM (
+			SELECT model FROM requests WHERE model IS NOT NULL AND TRIM(model) != ''
+			ORDER BY lower(model) ASC
+		) t`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		items := make([]string, 0, 64)
+		for rows.Next() {
+			var model string
+			if err := rows.Scan(&model); err != nil {
+				return nil, err
+			}
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			items = append(items, model)
+		}
+		return items, rows.Err()
 	}
 	rows, err := s.db.Query(`SELECT DISTINCT model
 		FROM requests

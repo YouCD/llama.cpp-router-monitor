@@ -30,6 +30,8 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		webPath = filepath.Join("web", clean)
+	} else if p == "/favicon.svg" || p == "/favicon.ico" {
+		webPath = "web/favicon.svg"
 	} else {
 		webPath = "web/index.html"
 	}

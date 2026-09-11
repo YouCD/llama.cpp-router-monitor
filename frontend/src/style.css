@@ -75,6 +75,18 @@ body {
   margin-top: 4px;
 }
 
+.header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.header-logo {
+  width: 48px;
+  height: 48px;
+  margin-top: 6px;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
