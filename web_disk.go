@@ -13,6 +13,14 @@ import (
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
 	w.Header().Set("Cache-Control", "no-cache")
 
+	if !s.uiHostAllowed(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":   "forbidden",
+			"message": "ui access not allowed for this host",
+		})
+		return
+	}
+
 	var webPath string
 	if p == "/ui" || p == "/" {
 		webPath = "web/index.html"

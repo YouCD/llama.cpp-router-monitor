@@ -289,15 +289,20 @@ func (s *Scheduler) ensureTarget(ctx context.Context, target, command, readiness
 	return newReady, nil
 }
 
-// markReadyClosed 安全地关闭 ready channel 并记录其已关闭状态，避免重复 close。
-// 必须在持有 s.mu 之外调用。
+// markReadyClosed 持锁关闭 ready channel 并记录状态，保证每个 channel 只 close 一次。
+// 所有 ready channel 的关闭都必须经由这里，避免并发 close 导致 panic。
 func (s *Scheduler) markReadyClosed(ch chan struct{}) {
-	s.mu.Lock()
-	s.readyChClosed = true
-	s.mu.Unlock()
-	if ch != nil {
-		close(ch)
+	if ch == nil {
+		return
 	}
+	s.mu.Lock()
+	if s.readyChClosed {
+		s.mu.Unlock()
+		return
+	}
+	s.readyChClosed = true
+	close(ch)
+	s.mu.Unlock()
 }
 
 // reconcileReady 周期性检查当前模式进程的就绪状态，用于修复"大模型启动慢导致
@@ -311,7 +316,6 @@ func (s *Scheduler) reconcileReady() {
 	}
 	mode := s.mode
 	ch := s.readyCh
-	closed := s.readyChClosed
 	var baseURL, auth string
 	if mode == modeCoding {
 		baseURL = s.cfg.Coding.ReadinessURL
@@ -332,12 +336,11 @@ func (s *Scheduler) reconcileReady() {
 		if !s.readyOK {
 			s.readyOK = true
 			s.infof("%s became ready (reconciled)", mode)
-			if ch != nil && !closed {
-				s.readyChClosed = true
-				close(ch)
-			}
+			s.mu.Unlock()
+			s.markReadyClosed(ch)
+		} else {
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }
 

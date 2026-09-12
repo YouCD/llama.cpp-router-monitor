@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -260,5 +261,32 @@ func TestAPIBaseFromReadiness(t *testing.T) {
 		if got := apiBaseFromReadiness(c.in); got != c.want {
 			t.Errorf("apiBaseFromReadiness(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestMarkReadyClosedConcurrent(t *testing.T) {
+	cfg := &SchedulingConfig{
+		Coding:     CodingConfig{Command: "sleep 30", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: "http://127.0.0.1:8080"},
+		Background: BackgroundConfig{Command: "sleep 30", ReadinessURL: "http://127.0.0.1:8080"},
+	}
+	sw := SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: time.Second}
+	s := NewScheduler(cfg, time.Hour, sw, &http.Client{})
+	s.SetLogger(func(string, ...any) {})
+
+	ch := make(chan struct{})
+	var wg sync.WaitGroup
+	// 并发对同一 channel 调用 markReadyClosed，不应 panic（double-close 防护）。
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.markReadyClosed(ch)
+		}()
+	}
+	wg.Wait()
+	select {
+	case <-ch:
+	default:
+		t.Fatal("expected channel to be closed")
 	}
 }

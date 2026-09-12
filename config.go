@@ -61,6 +61,9 @@ type SwitchConfig struct {
 type ServerConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
 	DataDir    string `yaml:"data_dir"`
+	// UIAllowedHosts 允许访问 /_proxy/ui 面板的 Host 列表（忽略端口与大小写）。
+	// 为空则不限制；配置后，Host 不在列表内的请求访问面板将返回 403。
+	UIAllowedHosts []string `yaml:"ui_allowed_hosts"`
 }
 
 type DatabaseConfig struct {
@@ -222,6 +225,7 @@ func (c *YAMLConfig) toLegacyConfig() Config {
 		PollInterval:        time.Duration(c.Proxy.PollInterval) * time.Second,
 		RecordPaths:         c.Proxy.RecordPaths,
 		APIKey:              c.Proxy.APIKey,
+		UIAllowedHosts:      c.Server.UIAllowedHosts,
 	}
 }
 

@@ -20,7 +20,8 @@ type Config struct {
 	PollBackendMetrics  bool
 	PollInterval        time.Duration
 	RecordPaths         []string
-	APIKey              string // 客户端访问 proxy 的 API Key，空值则不鉴权
+	APIKey              string   // 客户端访问 proxy 的 API Key，空值则不鉴权
+	UIAllowedHosts      []string // 允许访问 /_proxy/ui 的 Host 白名单，空则不限制
 }
 
 type Server struct {

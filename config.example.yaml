@@ -3,6 +3,10 @@
 server:
   listen_addr: ":9091"
   data_dir: "./data"
+  # 允许访问 /_proxy/ui 面板的 Host 白名单（忽略端口与大小写）。
+  # 留空则不限制。配置后，Host 不在列表内的请求访问面板返回 403。
+  ui_allowed_hosts:
+    - "llm.youcd.online"
 
 database:
   type: "sqlite"  # sqlite 或 postgresql

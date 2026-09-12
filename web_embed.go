@@ -22,6 +22,14 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	if !s.uiHostAllowed(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":   "forbidden",
+			"message": "ui access not allowed for this host",
+		})
+		return
+	}
+
 	var name string
 	if p == "/ui" || p == "/" {
 		name = "web/index.html"
