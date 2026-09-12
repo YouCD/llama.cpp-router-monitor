@@ -40,8 +40,11 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	clientIP := getClientIP(r)
 	// 创建带 request_id 的请求上下文，日志可按 request_id 串联整个请求生命周期。
 	ctx := s.newInflightCtx(r.Context(), requestID)
-	backendURL, trimmedQuery, backendCfg, err := s.selectBackend(r)
+	backendURL, trimmedQuery, backendCfg, err := s.selectBackend(w, r, ctx)
 	if err != nil {
+		if errors.Is(err, errScheduledRejected) {
+			return // 响应已由 selectBackend 写出
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -245,8 +248,51 @@ func buildProxyPath(backendURL, path string) string {
 	return path
 }
 
-func (s *Server) selectBackend(r *http.Request) (backend string, query string, bc *BackendConfig, err error) {
+// selectBackend 选择本次请求的转发后端。启用进程调度时优先走调度逻辑：
+//   - 开发(coding)流量：确保 coding 进程就绪（未就绪则 pending 等待，超时返回 503），并续期租约；
+//   - 非开发流量：若处于开发状态则返回 503 独占拒绝，否则转发到 background 进程。
+//
+// 未启用调度时退化为原有负载均衡逻辑。
+func (s *Server) selectBackend(w http.ResponseWriter, r *http.Request, ctx context.Context) (backend string, query string, bc *BackendConfig, err error) {
 	vals := r.URL.Query()
+
+	if s.scheduler != nil {
+		isCoding := s.scheduler.codingHeaderMatch(r.Header)
+		if isCoding {
+			s.scheduler.TouchCoding()
+			s.pushSchedEvent("coding_request", map[string]any{"method": r.Method, "path": r.URL.Path})
+			ready, rerr := s.scheduler.EnsureCoding(ctx)
+			if rerr != nil {
+				return "", "", nil, rerr
+			}
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				return "", "", nil, fmt.Errorf("timed out waiting for coding model ready")
+			}
+			base := s.scheduler.ActiveBaseURL()
+			if base == "" {
+				return "", "", nil, fmt.Errorf("coding model not ready")
+			}
+			backend = strings.TrimRight(base, "/")
+			s.scheduler.TouchCoding()
+			return backend, vals.Encode(), nil, nil
+		}
+
+		// 非开发流量：开发状态下独占拒绝。
+		if s.scheduler.IsCodingActive() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error":   "coding mode active",
+				"message": "model is exclusively held by coding traffic, retry later",
+			})
+			return "", "", nil, errScheduledRejected
+		}
+		base := s.scheduler.ActiveBaseURL()
+		if base == "" {
+			return "", "", nil, fmt.Errorf("background model not ready")
+		}
+		return strings.TrimRight(base, "/"), vals.Encode(), nil, nil
+	}
 
 	if s.cfg.AllowDynamicBackend {
 		if b := strings.TrimSpace(r.Header.Get("X-Backend-URL")); b != "" {
@@ -278,6 +324,10 @@ func (s *Server) selectBackend(r *http.Request) (backend string, query string, b
 	}
 	return backend, vals.Encode(), bc, nil
 }
+
+// errScheduledRejected 标记调度独占拒绝的请求（响应已在 selectBackend 内写出）。
+var errScheduledRejected = errors.New("scheduled request rejected")
+
 func isStreamingResponse(resp *http.Response, reqStreaming bool) bool {
 	if reqStreaming {
 		return true

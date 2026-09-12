@@ -35,6 +35,8 @@
 
       <StatsCards :stats="stats" :llm-stats="llmStats" :has-filters="hasFilters" :output-sec="outputSec" :hours="statsHours" />
 
+      <SchedulerStatus :data="scheduler" />
+
       <BackendStats :items="backendStats" :hours="statsHours" @select="onBackendSelect" />
 
       <section class="daily-section">
@@ -66,6 +68,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import StatsCards from './components/StatsCards.vue'
+import SchedulerStatus from './components/SchedulerStatus.vue'
 import BackendStats from './components/BackendStats.vue'
 import DailyChart from './components/DailyChart.vue'
 import FilterPanel from './components/FilterPanel.vue'
@@ -74,7 +77,7 @@ import RequestDrawer from './components/RequestDrawer.vue'
 import { currentLang, elementLocale, t, setLang } from './i18n'
 import {
   fetchStats, fetchRequests, fetchRequest, fetchModels, fetchBackends,
-  fetchStatsByBackend, fetchDailyStats,
+  fetchStatsByBackend, fetchDailyStats, fetchScheduler,
 } from './api'
 import { fmtDate, statusBucket } from './utils'
 
@@ -89,6 +92,7 @@ const backendStats = ref([])
 const models = ref([])
 const backends = ref([])
 const dailyStats = ref([])
+const scheduler = ref(null)
 const outputSec = ref(0)
 const hasMore = ref(false)
 const loadingMore = ref(false)
@@ -195,6 +199,14 @@ async function loadDailyStats() {
   }
 }
 
+async function loadScheduler() {
+  try {
+    scheduler.value = await fetchScheduler()
+  } catch {
+    /* ignore */
+  }
+}
+
 async function loadOptions() {
   try {
     models.value = await fetchModels()
@@ -205,7 +217,7 @@ async function loadOptions() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStats(), loadRequests(), loadBackendStats(), loadDailyStats()])
+  await Promise.all([loadStats(), loadRequests(), loadBackendStats(), loadDailyStats(), loadScheduler()])
 }
 
 function onApply(f) {
@@ -267,6 +279,7 @@ onMounted(async () => {
     setInterval(() => { if (autoRefresh.value) loadStats().catch(() => {}) }, 5000),
     setInterval(() => { if (autoRefresh.value) loadRequests().catch(() => {}) }, 9000),
     setInterval(() => { loadOptions().catch(() => {}) }, 30000),
+    setInterval(() => { loadScheduler().catch(() => {}) }, 5000),
   ]
 })
 

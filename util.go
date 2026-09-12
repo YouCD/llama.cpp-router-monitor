@@ -61,6 +61,21 @@ func (s *Server) isPostgres() bool {
 	return s.db.GetType() == "postgresql"
 }
 
+// pushSchedEvent 记录并广播一次调度相关事件（coding 请求、进程切换等）。
+func (s *Server) pushSchedEvent(kind string, extra map[string]any) {
+	ev := map[string]any{"kind": "scheduler_" + kind, "time": time.Now().UTC()}
+	for k, v := range extra {
+		ev[k] = v
+	}
+	s.schedMu.Lock()
+	s.schedEvents = append(s.schedEvents, ev)
+	if len(s.schedEvents) > 200 {
+		s.schedEvents = s.schedEvents[len(s.schedEvents)-200:]
+	}
+	s.schedMu.Unlock()
+	s.hub.Broadcast(ev)
+}
+
 func (s *Server) streamValue(v bool) any {
 	if s.isPostgres() {
 		return v

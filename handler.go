@@ -13,7 +13,7 @@ import (
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/_proxy") {
-	s.handleMonitor(w, r)
+		s.handleMonitor(w, r)
 		return
 	}
 	s.handleProxy(w, r)
@@ -40,8 +40,15 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 				"/_proxy/backend-metrics?limit=200",
 				"/_proxy/daily-stats?days=30",
 				"/_proxy/ui",
+				"/_proxy/scheduler",
 			},
 		})
+	case p == "/scheduler":
+		if s.scheduler == nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "scheduler disabled"})
+			return
+		}
+		writeJSON(w, http.StatusOK, s.schedulerStatus())
 	case p == "/ui" || strings.HasPrefix(p, "/ui/") || strings.HasPrefix(p, "/assets/"):
 		s.handleUI(w, r, p)
 	case p == "/health":
@@ -239,6 +246,54 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// schedulerStatus 返回进程调度器的当前运行状态，供监控面板展示。
+func (s *Server) schedulerStatus() map[string]any {
+	if s.scheduler == nil {
+		return map[string]any{"enabled": false}
+	}
+	s.scheduler.mu.Lock()
+	mode := s.scheduler.mode
+	ready := s.scheduler.readyOK
+	lastCodingAt := s.scheduler.lastCodingAt
+	var pid int
+	if s.scheduler.cmd != nil && s.scheduler.cmd.Process != nil {
+		pid = s.scheduler.cmd.Process.Pid
+	}
+	s.scheduler.mu.Unlock()
+	activeBase := s.scheduler.ActiveBaseURL()
+
+	status := map[string]any{
+		"enabled":         true,
+		"mode":            mode,
+		"ready":           ready,
+		"coding_active":   s.scheduler.IsCodingActive(),
+		"last_coding_at":  nil,
+		"pid":             nil,
+		"active_base_url": activeBase,
+	}
+	if pid != 0 {
+		status["pid"] = pid
+	}
+	if !lastCodingAt.IsZero() {
+		status["last_coding_at"] = lastCodingAt.UTC()
+		status["lease_seconds"] = int(s.scheduler.lease.Seconds())
+		idleSeconds := int(time.Since(lastCodingAt).Seconds())
+		status["idle_seconds"] = idleSeconds
+		remaining := s.scheduler.lease - time.Since(lastCodingAt)
+		if remaining > 0 {
+			status["lease_remaining_seconds"] = int(remaining.Seconds())
+		} else {
+			status["lease_remaining_seconds"] = 0
+		}
+	}
+
+	s.schedMu.RLock()
+	events := append([]map[string]any(nil), s.schedEvents...)
+	s.schedMu.RUnlock()
+	status["events"] = events
+	return status
 }
 
 // handleModels 让路由器自身应答 OpenAI 兼容的 GET /v1/models。

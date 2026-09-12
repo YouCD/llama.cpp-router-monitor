@@ -8,10 +8,54 @@ import (
 )
 
 type YAMLConfig struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Backends BackendsConfig `yaml:"backends"`
-	Proxy    ProxyConfig    `yaml:"proxy"`
+	Server     ServerConfig      `yaml:"server"`
+	Database   DatabaseConfig    `yaml:"database"`
+	Backends   BackendsConfig    `yaml:"backends"`
+	Proxy      ProxyConfig       `yaml:"proxy"`
+	Scheduling *SchedulingConfig `yaml:"scheduling"`
+}
+
+// SchedulingConfig 描述进程调度子系统的配置。为 nil 时整个调度子系统禁用，
+// 代理退化为纯转发模式（转发到 backends.list 外部后端）。
+type SchedulingConfig struct {
+	Coding CodingConfig `yaml:"coding"`
+	// Background 描述后台模型的启动配置。
+	Background BackgroundConfig `yaml:"background"`
+	// Lease 描述开发租约相关配置。
+	Lease LeaseConfig `yaml:"lease"`
+	// Switch 描述模型切换时的时序参数。
+	Switch SwitchConfig `yaml:"switch"`
+}
+
+// CodingConfig 描述开发模型的启动配置与识别头。
+// header 允许配置多组：任一请求头的值与对应值完全匹配即判定为开发(coding)流量。
+type CodingConfig struct {
+	Command                string            `yaml:"command"`
+	Header                 map[string]string `yaml:"header"`
+	ReadinessURL           string            `yaml:"readiness_url"`
+	ReadinessAuthorization string            `yaml:"readiness_authorization"`
+	LogFile                string            `yaml:"log_file"`
+}
+
+// BackgroundConfig 描述后台模型的启动配置。
+type BackgroundConfig struct {
+	Command                string `yaml:"command"`
+	ReadinessURL           string `yaml:"readiness_url"`
+	ReadinessAuthorization string `yaml:"readiness_authorization"`
+	LogFile                string `yaml:"log_file"`
+}
+
+// LeaseConfig 描述开发租约相关配置。
+type LeaseConfig struct {
+	// CodingIdleTimeout 距最后一次 coding 流量超过该时长即切回 background。
+	CodingIdleTimeout time.Duration `yaml:"coding_idle_timeout"`
+}
+
+// SwitchConfig 描述模型切换时的时序参数。
+type SwitchConfig struct {
+	DrainTimeout   time.Duration `yaml:"drain_timeout"`
+	KillTimeout    time.Duration `yaml:"kill_timeout"`
+	StartupTimeout time.Duration `yaml:"startup_timeout"`
 }
 
 type ServerConfig struct {
@@ -134,6 +178,35 @@ func setConfigDefaults(cfg *YAMLConfig) {
 			cfg.Backends.List[i].Enabled = true
 		}
 	}
+
+	if cfg.Scheduling != nil {
+		if cfg.Scheduling.Coding.Header == nil {
+			cfg.Scheduling.Coding.Header = map[string]string{"X-LLM-Purpose": "coding"}
+		}
+		if cfg.Scheduling.Coding.ReadinessURL == "" {
+			cfg.Scheduling.Coding.ReadinessURL = "http://127.0.0.1:8080"
+		}
+		if cfg.Scheduling.Background.ReadinessURL == "" {
+			cfg.Scheduling.Background.ReadinessURL = "http://127.0.0.1:8080"
+		}
+		if cfg.Scheduling.Lease.CodingIdleTimeout == 0 {
+			cfg.Scheduling.Lease.CodingIdleTimeout = 30 * time.Minute
+		}
+		if cfg.Scheduling.Switch.DrainTimeout == 0 {
+			cfg.Scheduling.Switch.DrainTimeout = 10 * time.Second
+		}
+		if cfg.Scheduling.Switch.KillTimeout == 0 {
+			cfg.Scheduling.Switch.KillTimeout = 10 * time.Second
+		}
+		if cfg.Scheduling.Switch.StartupTimeout == 0 {
+			cfg.Scheduling.Switch.StartupTimeout = 120 * time.Second
+		}
+	}
+}
+
+// hasScheduling 报告进程调度子系统是否启用。
+func (c *YAMLConfig) hasScheduling() bool {
+	return c.Scheduling != nil && (c.Scheduling.Coding.Command != "" || c.Scheduling.Background.Command != "")
 }
 
 func (c *YAMLConfig) toLegacyConfig() Config {

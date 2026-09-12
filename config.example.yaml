@@ -48,3 +48,34 @@ proxy:
     - "/v1/chat/completions"
     - "/v1/completions"
     - "/v1/embeddings"
+
+# 进程调度（可选）：配置后启用"开发流量识别 + 模型进程切换"，未配置则保持纯转发模式。
+# 开启后代理会直接执行下方命令启动/切换 llama.cpp 模型进程，请求不再走 backends.list 负载均衡。
+#scheduling:
+#  coding:
+#    # command 支持多行：每个参数一行，最终拼接为一行命令执行。注意块内不可用 # 注释。
+#    command: >
+#      /usr/local/bin/llama-server
+#      -m /path/to/coding.gguf
+#      --host 0.0.0.0 --port 8080 -c 8192
+#    header:
+#      "X-LLM-Purpose": "coding"   # 请求头与该值完全匹配即判定为开发流量
+#    # 就绪探测地址：完全按此配置发起 GET（不拼接路径）。若需鉴权请配 readiness_authorization。
+#    readiness_url: "http://127.0.0.1:8080/v1/models"
+#    readiness_authorization: "Bearer your-api-key"   # 可选：原样作为 Authorization 请求头
+#    log_file: "./data/coding.log"     # 可选：该模型进程的 stdout/stderr 日志文件
+#  background:
+#    command: >
+#      /usr/local/bin/llama-server
+#      -m /path/to/background.gguf
+#      --host 0.0.0.0 --port 8080 -c 8192
+#    readiness_url: "http://127.0.0.1:8080/v1/models"
+#    readiness_authorization: "Bearer your-api-key"   # 可选：原样作为 Authorization 请求头
+#    log_file: "./data/background.log" # 可选：该模型进程的 stdout/stderr 日志文件
+#  lease:
+#    # 距最后一次开发流量超过该时长即切回 background 模型
+#    coding_idle_timeout: 30m
+#  switch:
+#    drain_timeout: 10s     # 切换前优雅排空在途请求的等待上限
+#    kill_timeout: 10s      # 停止旧进程的等待上限
+#    startup_timeout: 120s  # 等待新模型加载就绪的上限（大模型加载较慢）

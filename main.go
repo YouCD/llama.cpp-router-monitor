@@ -85,12 +85,31 @@ func main() {
 		hub: NewEventHub(),
 	}
 
+	// 装配进程调度子系统：仅在配置了 scheduling 时启用，否则保持纯转发。
+	if yamlCfg.hasScheduling() {
+		scheduler := NewScheduler(yamlCfg.Scheduling, yamlCfg.Scheduling.Lease.CodingIdleTimeout, yamlCfg.Scheduling.Switch, s.client)
+		scheduler.SetActiveCount(func() int64 { return s.active.Load() })
+		s.scheduler = scheduler
+	}
+
 	// 捕获 SIGINT / SIGTERM，用于优雅起停。
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if s.scheduler != nil {
+		log.WithCtx(ctx).Infof("process scheduler enabled: coding_idle_timeout=%s drain=%s kill=%s startup=%s",
+			yamlCfg.Scheduling.Lease.CodingIdleTimeout, yamlCfg.Scheduling.Switch.DrainTimeout, yamlCfg.Scheduling.Switch.KillTimeout, yamlCfg.Scheduling.Switch.StartupTimeout)
+	}
 	go s.cleanupLoop(ctx)
 	if cfg.PollBackendMetrics {
 		go s.backendMetricsLoop(ctx)
+	}
+	if s.scheduler != nil {
+		go func() {
+			if err := s.scheduler.Start(ctx); err != nil {
+				log.WithCtx(ctx).Fatalf("scheduler start: %v", err)
+			}
+		}()
+		go s.scheduler.Loop(ctx)
 	}
 
 	backendCount := 0
@@ -122,6 +141,9 @@ func main() {
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.WithCtx(ctx).Infof("graceful shutdown error: %v", err)
+		}
+		if s.scheduler != nil {
+			s.scheduler.Shutdown()
 		}
 		cancel()
 		log.WithCtx(ctx).Infof("shutdown complete")

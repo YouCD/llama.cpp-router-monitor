@@ -68,3 +68,7 @@ export async function fetchDailyStats(days, filters = {}) {
     days: data.days || days,
   }
 }
+
+export async function fetchScheduler() {
+  return fetchJSON('/_proxy/scheduler')
+}

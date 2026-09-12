@@ -24,16 +24,19 @@ type Config struct {
 }
 
 type Server struct {
-	cfg      Config
-	yamlCfg  *YAMLConfig
-	db       Database
-	balancer *BackendBalancer
-	client   *http.Client
-	hub      *EventHub
-	active   atomic.Int64
+	cfg       Config
+	yamlCfg   *YAMLConfig
+	db        Database
+	balancer  *BackendBalancer
+	scheduler *Scheduler
+	client    *http.Client
+	hub       *EventHub
+	active    atomic.Int64
 
-	sseMu    sync.Mutex
-	sseCancels map[context.Context]context.CancelFunc
+	sseMu       sync.Mutex
+	sseCancels  map[context.Context]context.CancelFunc
+	schedMu     sync.RWMutex
+	schedEvents []map[string]any
 }
 type RequestRecord struct {
 	ID                 string    `json:"id"`

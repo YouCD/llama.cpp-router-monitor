@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -204,7 +205,7 @@ func TestSelectBackendWithBalancer(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 20; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-		backend, _, _, err := svc.selectBackend(req)
+		backend, _, _, err := svc.selectBackend(nil, req, context.Background())
 		if err != nil {
 			t.Fatalf("selectBackend: %v", err)
 		}
@@ -234,7 +235,7 @@ func TestSelectBackendWithBalancerNoDefault(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-		backend, _, bc, err := svc.selectBackend(req)
+		backend, _, bc, err := svc.selectBackend(nil, req, context.Background())
 		if err != nil {
 			t.Fatalf("selectBackend: %v", err)
 		}
@@ -249,7 +250,7 @@ func TestSelectBackendNoBackendConfigured(t *testing.T) {
 	cfg := Config{AllowDynamicBackend: true}
 	svc := &Server{cfg: cfg}
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	if _, _, _, err := svc.selectBackend(req); err == nil {
+	if _, _, _, err := svc.selectBackend(nil, req, context.Background()); err == nil {
 		t.Fatal("expected error when no backend available")
 	}
 }
@@ -263,7 +264,7 @@ func TestSelectBackendDynamicStillWorks(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Header.Set("X-Backend-URL", "http://override.example:8080")
-	backend, _, bc, err := svc.selectBackend(req)
+	backend, _, bc, err := svc.selectBackend(nil, req, context.Background())
 	if err != nil {
 		t.Fatalf("selectBackend: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestSelectBackendBalancerReturnsConfig(t *testing.T) {
 	found := map[string]*BackendConfig{}
 	for i := 0; i < 200; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-		backend, _, bc, err := svc.selectBackend(req)
+		backend, _, bc, err := svc.selectBackend(nil, req, context.Background())
 		if err != nil {
 			t.Fatalf("selectBackend: %v", err)
 		}
@@ -684,5 +685,122 @@ func TestInitPostgreSQLDBSQL(t *testing.T) {
 	db := &PostgreSQLDatabase{}
 	if db.GetType() != "postgresql" {
 		t.Fatalf("unexpected type %q", db.GetType())
+	}
+}
+
+func TestLoadYAMLConfigScheduling(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+server:
+  listen_addr: ":9091"
+database:
+  type: "sqlite"
+  sqlite:
+    path: "proxy.db"
+backends:
+  allow_dynamic: true
+  list:
+    - name: "ext"
+      url: "http://ext:8080"
+      enabled: true
+proxy: {}
+scheduling:
+  coding:
+    command: "llama-server -m coding.gguf --port 8080"
+    header:
+      X-LLM-Purpose: coding
+    readiness_url: "http://127.0.0.1:8080"
+  background:
+    command: "llama-server -m bg.gguf --port 8080"
+    readiness_url: "http://127.0.0.1:8080"
+  lease:
+    coding_idle_timeout: 45m
+  switch:
+    drain_timeout: 15s
+    kill_timeout: 20s
+    startup_timeout: 200s
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := loadYAMLConfig(path)
+	if err != nil {
+		t.Fatalf("load yaml config: %v", err)
+	}
+
+	if !cfg.hasScheduling() {
+		t.Fatal("hasScheduling should be true")
+	}
+	if cfg.Scheduling.Coding.Command != "llama-server -m coding.gguf --port 8080" {
+		t.Fatalf("coding command=%q", cfg.Scheduling.Coding.Command)
+	}
+	if cfg.Scheduling.Coding.Header["X-LLM-Purpose"] != "coding" {
+		t.Fatalf("coding header=%v", cfg.Scheduling.Coding.Header)
+	}
+	if cfg.Scheduling.Background.ReadinessURL != "http://127.0.0.1:8080" {
+		t.Fatalf("bg readiness=%q", cfg.Scheduling.Background.ReadinessURL)
+	}
+	if cfg.Scheduling.Lease.CodingIdleTimeout != 45*time.Minute {
+		t.Fatalf("idle timeout=%v", cfg.Scheduling.Lease.CodingIdleTimeout)
+	}
+	if cfg.Scheduling.Switch.DrainTimeout != 15*time.Second || cfg.Scheduling.Switch.KillTimeout != 20*time.Second || cfg.Scheduling.Switch.StartupTimeout != 200*time.Second {
+		t.Fatalf("switch=%+v", cfg.Scheduling.Switch)
+	}
+}
+
+func TestLoadYAMLConfigNoSchedulingDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "server: {}\ndatabase: {}\nbackends: {}\nproxy: {}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadYAMLConfig(path)
+	if err != nil {
+		t.Fatalf("load yaml config: %v", err)
+	}
+	if cfg.hasScheduling() {
+		t.Fatal("hasScheduling should be false without scheduling config")
+	}
+	if cfg.Scheduling != nil {
+		t.Fatal("scheduling should be nil without scheduling config")
+	}
+}
+
+func TestLoadYAMLConfigSchedulingDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+server: {}
+database: {}
+backends: {}
+proxy: {}
+scheduling:
+  coding:
+    command: "llama-server -m coding.gguf"
+    readiness_url: "http://127.0.0.1:8080"
+  background:
+    command: "llama-server -m bg.gguf"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadYAMLConfig(path)
+	if err != nil {
+		t.Fatalf("load yaml config: %v", err)
+	}
+	if !cfg.hasScheduling() {
+		t.Fatal("hasScheduling should be true")
+	}
+	if cfg.Scheduling.Coding.Header["X-LLM-Purpose"] != "coding" {
+		t.Fatalf("default coding header=%v", cfg.Scheduling.Coding.Header)
+	}
+	if cfg.Scheduling.Lease.CodingIdleTimeout != 30*time.Minute {
+		t.Fatalf("default idle timeout=%v", cfg.Scheduling.Lease.CodingIdleTimeout)
+	}
+	if cfg.Scheduling.Switch.DrainTimeout != 10*time.Second || cfg.Scheduling.Switch.KillTimeout != 10*time.Second || cfg.Scheduling.Switch.StartupTimeout != 120*time.Second {
+		t.Fatalf("default switch=%+v", cfg.Scheduling.Switch)
 	}
 }
