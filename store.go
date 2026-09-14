@@ -272,7 +272,7 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 		FROM requests WHERE 1=1`
 	args := make([]any, 0, 16)
 
-	query, args = appendRequestFilterSQL(query, args, f, true, s.isPostgres())
+	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
 
 	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
@@ -345,20 +345,18 @@ func (s *Server) deleteRequestByID(id string) error {
 	}
 	return nil
 }
-func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
-	if hours <= 0 {
-		hours = 24
-	}
-	if f.SinceHours > 0 {
-		hours = f.SinceHours
+func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
+	from := f.TimeFrom.UTC()
+	to := f.TimeTo.UTC()
+	secs := to.Sub(from).Seconds()
+	if secs <= 0 {
+		secs = 1
 	}
 
 	var streamSumSQL = `COALESCE(SUM(is_streaming),0)`
 	if s.isPostgres() {
 		streamSumSQL = `COALESCE(SUM(CASE WHEN is_streaming THEN 1 ELSE 0 END),0)`
 	}
-	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
-	sinceVal := s.createdAtValue(since)
 
 	var totalRequests int64
 	var promptTokens int64
@@ -366,8 +364,6 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 	var totalTokens int64
 	var lifetimeRequests int64
 	var lifetimeTokens int64
-	var matchingRequests int64
-	var matchingTokens int64
 	var reqBytes int64
 	var respBytes int64
 	var avgPromptMs float64
@@ -390,9 +386,9 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 		COALESCE(AVG(first_byte_ms),0),
 		COALESCE(SUM(CASE WHEN status_code >= 400 OR error_text != '' THEN 1 ELSE 0 END),0),
 		` + streamSumSQL + `
-		FROM requests WHERE created_at >= ?`
-	args := []any{sinceVal}
-	query, args = appendRequestFilterSQL(query, args, f, false, s.isPostgres())
+		FROM requests WHERE 1=1`
+	args := []any{}
+	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
 
 	err := s.db.QueryRow(s.rebind(query), args...).Scan(
 		&totalRequests,
@@ -417,18 +413,8 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 		FROM requests`).Scan(&lifetimeRequests, &lifetimeTokens); err != nil {
 		return nil, err
 	}
-	matchQuery := `SELECT
-		COUNT(*),
-		COALESCE(SUM(total_tokens),0)
-		FROM requests WHERE 1=1`
-	matchArgs := []any{}
-	matchQuery, matchArgs = appendRequestFilterSQL(matchQuery, matchArgs, f, true, s.isPostgres())
-	if err := s.db.QueryRow(s.rebind(matchQuery), matchArgs...).Scan(&matchingRequests, &matchingTokens); err != nil {
-		return nil, err
-	}
 
-	secs := float64(hours * 3600)
-	rpm := float64(totalRequests) / float64(hours*60)
+	rpm := float64(totalRequests) / (secs / 60)
 	promptTokensPerSec := float64(promptTokens) / secs
 	decodeTokensPerSec := float64(completionTokens) / secs
 	tokensPerSec := float64(totalTokens) / secs
@@ -438,14 +424,14 @@ func (s *Server) getStats(hours int, f RequestFilter) (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"hours":                    hours,
+		"hours":                    secs / 3600,
 		"active_connections":       s.active.Load(),
 		"total_requests":           totalRequests,
 		"total_prompt_tokens":      promptTokens,
 		"total_completion_tokens":  completionTokens,
 		"total_tokens":             totalTokens,
-		"matching_total_requests":  matchingRequests,
-		"matching_total_tokens":    matchingTokens,
+		"matching_total_requests":  totalRequests,
+		"matching_total_tokens":    totalTokens,
 		"lifetime_total_requests":  lifetimeRequests,
 		"lifetime_total_tokens":    lifetimeTokens,
 		"total_request_bytes":      reqBytes,
@@ -537,12 +523,9 @@ func (s *Server) getBackends() ([]string, error) {
 	return items, rows.Err()
 }
 
-func (s *Server) getStatsByBackend(hours int) ([]map[string]any, error) {
-	if hours <= 0 {
-		hours = 24
-	}
-	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
-	sinceVal := s.createdAtValue(since)
+func (s *Server) getStatsByBackend(f RequestFilter) ([]map[string]any, error) {
+	from := f.TimeFrom.UTC()
+	to := f.TimeTo.UTC()
 
 	var streamSumSQL = `COALESCE(SUM(is_streaming),0)`
 	if s.isPostgres() {
@@ -560,11 +543,11 @@ func (s *Server) getStatsByBackend(hours int) ([]map[string]any, error) {
 		COALESCE(SUM(CASE WHEN status_code >= 400 OR error_text != '' THEN 1 ELSE 0 END),0),
 		` + streamSumSQL + `
 		FROM requests
-		WHERE created_at >= ? AND backend_url IS NOT NULL AND TRIM(backend_url) != ''
+		WHERE created_at >= ? AND created_at <= ? AND backend_url IS NOT NULL AND TRIM(backend_url) != ''
 		GROUP BY backend_url
 		ORDER BY COUNT(*) DESC`
 
-	rows, err := s.db.Query(s.rebind(query), sinceVal)
+	rows, err := s.db.Query(s.rebind(query), filterTimeArg(from, s.isPostgres()), filterTimeArg(to, s.isPostgres()))
 	if err != nil {
 		return nil, err
 	}
@@ -688,7 +671,30 @@ func (s *Server) cleanup() {
 	}
 }
 
-func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSince bool, isPostgres bool) (string, []any) {
+// filterTimeArg 将时间转换为对应数据库驱动可比较的参数值。
+func filterTimeArg(t time.Time, isPostgres bool) any {
+	if isPostgres {
+		return t.UTC()
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// effectiveWindow 返回筛选生效的 [from, to] 时间窗口。
+// 若 filter 指定了绝对时间（TimeFrom/TimeTo）则优先使用，否则回退到"最近 fallbackHours 小时"。
+func (s *Server) effectiveWindow(f RequestFilter, fallbackHours int) (time.Time, time.Time) {
+	now := time.Now().UTC()
+	from := now.Add(-time.Duration(fallbackHours) * time.Hour)
+	to := now
+	if !f.TimeFrom.IsZero() {
+		from = f.TimeFrom.UTC()
+	}
+	if !f.TimeTo.IsZero() {
+		to = f.TimeTo.UTC()
+	}
+	return from, to
+}
+
+func appendRequestFilterSQL(query string, args []any, f RequestFilter, isPostgres bool) (string, []any) {
 	if f.ChatCompletionsOnly {
 		query += ` AND method = ? AND path = ?`
 		args = append(args, http.MethodPost, "/v1/chat/completions")
@@ -713,15 +719,13 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, includeSi
 		query += ` AND status_code = ?`
 		args = append(args, f.StatusCode)
 	}
-	if includeSince && f.SinceHours > 0 {
-		since := time.Now().UTC().Add(-time.Duration(f.SinceHours) * time.Hour)
-		if isPostgres {
-			query += ` AND created_at >= ?`
-			args = append(args, since)
-		} else {
-			query += ` AND created_at >= ?`
-			args = append(args, since.Format(time.RFC3339Nano))
-		}
+	if !f.TimeFrom.IsZero() {
+		query += ` AND created_at >= ?`
+		args = append(args, filterTimeArg(f.TimeFrom, isPostgres))
+	}
+	if !f.TimeTo.IsZero() {
+		query += ` AND created_at <= ?`
+		args = append(args, filterTimeArg(f.TimeTo, isPostgres))
 	}
 	if f.Streaming != nil {
 		query += ` AND is_streaming = ?`
@@ -757,19 +761,23 @@ func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, err
 		days = 365
 	}
 
-	// 存储层 created_at 为 UTC 墙壁时间。按 +8 时区分组日期，
-	// 使 08:00 UTC 之前的请求归属到本地日期，避免跨天错位。
+	// 存储层 created_at 为 UTC（Postgres 为 TIMESTAMPTZ，SQLite 为 UTC 墙壁时间）。
+	// 按 +8 时区分组日期，使 08:00 UTC 之前的请求归属到本地日期，避免跨天错位。
 	dateExpr := `date(created_at, '+8 hours')`
 	if s.isPostgres() {
-		dateExpr = `to_char((created_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')`
+		dateExpr = `to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')`
 	}
 
-	// 窗口起点：本地时区（+8）的 (days-1) 天前的零点，再转回 UTC 时刻用于过滤。
+	// 时间窗口：优先使用 filter 中的绝对时间，否则回退到"本地时区（+8）(days-1) 天前的零点"。
 	loc := time.FixedZone("CST", 8*3600)
 	localNow := time.Now().In(loc)
-	localStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day()-(days-1), 0, 0, 0, 0, loc)
-	since := localStart.UTC()
-	sinceVal := s.createdAtValue(since)
+	if f.TimeFrom.IsZero() {
+		localStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day()-(days-1), 0, 0, 0, 0, loc)
+		f.TimeFrom = localStart.UTC()
+	}
+	if f.TimeTo.IsZero() {
+		f.TimeTo = time.Now().UTC()
+	}
 
 	query := `SELECT
 		` + dateExpr + `,
@@ -781,9 +789,9 @@ func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, err
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END),0)
 		FROM requests
-		WHERE created_at >= ?`
-	args := []any{sinceVal}
-	query, args = appendRequestFilterSQL(query, args, f, false, s.isPostgres())
+		WHERE 1=1`
+	args := []any{}
+	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
 	query += `
 		GROUP BY ` + dateExpr + `
 		ORDER BY ` + dateExpr + ` ASC`

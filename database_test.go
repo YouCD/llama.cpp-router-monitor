@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestParsePostgresKVURL(t *testing.T) {
@@ -82,7 +82,7 @@ func TestPgAdminDSN(t *testing.T) {
 }
 
 func TestIsMissingDatabaseError(t *testing.T) {
-	pqErr := &pq.Error{Code: "3D000", Message: `database "nope" does not exist`}
+	pqErr := &pgconn.PgError{Code: "3D000", Message: `database "nope" does not exist`}
 	if !isMissingDatabaseError(pqErr) {
 		t.Fatal("expected 3D000 to be recognized as missing database")
 	}

@@ -9,10 +9,9 @@
       :row-class-name="rowClassName"
       @row-click="onRowClick"
     >
-      <el-table-column :label="t('colTime')" min-width="118">
+      <el-table-column :label="t('colTime')" min-width="138">
         <template #default="{ row }">
-          <div class="mono">{{ row._time }}</div>
-          <div class="cell-subtle">{{ row._rel }}</div>
+          <div class="mono">{{ row._rel }}</div>
         </template>
       </el-table-column>
       <el-table-column :label="t('colRequest')" min-width="200">
@@ -96,7 +95,7 @@ import { computed } from 'vue'
 import { CopyDocument, View } from '@element-plus/icons-vue'
 import { t } from '../i18n'
 import {
-  fmtTime, fmtNum, fmtRate, fmtPercent, fmtLatency, fmtTokens, shortQuery,
+  fmtNum, fmtRate, fmtPercent, fmtLatency, fmtTokens, shortQuery,
   isCompleted as completed, statusClass, latencyTone, rateTone, cacheTone, methodClass,
 } from '../utils'
 
@@ -111,7 +110,6 @@ const emit = defineEmits(['loadMore', 'select'])
 const BREAK_MS = 30 * 60 * 1000
 
 const rows = computed(() => {
-  const now = Date.now()
   let prevTs = null
   return props.items.map((it) => {
     const ts = new Date(it.created_at).getTime()
@@ -122,8 +120,7 @@ const rows = computed(() => {
     prevTs = Number.isFinite(ts) ? ts : prevTs
     return {
       ...it,
-      _time: fmtTime(it.created_at),
-      _rel: fmtRelative(it.created_at, now),
+      _rel: fmtRelative(it.created_at),
       _break: breakLine,
     }
   })
@@ -146,18 +143,11 @@ function cacheDotClass(row) {
 function reqTitle(row) {
   return row.query ? `${row.path || ''}?${row.query}` : (row.path || '')
 }
-function fmtRelative(value, now) {
-  const ts = new Date(value).getTime()
-  if (!Number.isFinite(ts)) return ''
-  const diff = Math.max(0, now - ts)
-  const sec = Math.floor(diff / 1000)
-  if (sec < 5) return t('relJustNow')
-  if (sec < 60) return t('relSec', { n: sec })
-  const min = Math.floor(sec / 60)
-  if (min < 60) return t('relMin', { n: min })
-  const h = Math.floor(min / 60)
-  if (h < 24) return t('relHour', { n: h })
-  return t('relDay', { n: Math.floor(h / 24) })
+function fmtRelative(value) {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (x) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${d.getHours()}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 function rowClassName({ row }) {
   return row._break ? 'row-break' : ''

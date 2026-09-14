@@ -33,11 +33,11 @@
         </div>
       </header>
 
-      <StatsCards :stats="stats" :llm-stats="llmStats" :has-filters="hasFilters" :output-sec="outputSec" :hours="statsHours" />
+      <StatsCards :stats="stats" :llm-stats="llmStats" :has-filters="hasFilters" :output-sec="outputSec" :window-label="timeWindow.label" />
 
       <SchedulerStatus :data="scheduler" />
 
-      <BackendStats :items="backendStats" :hours="statsHours" @select="onBackendSelect" />
+      <BackendStats :items="backendStats" :window-sec="timeWindow.secs" @select="onBackendSelect" />
 
       <section class="daily-section">
         <h2 class="daily-heading">{{ t('dailyTitle') }}</h2>
@@ -84,7 +84,10 @@ import { fmtDate, statusBucket } from './utils'
 const pageSize = 100
 const locale = computed(() => elementLocale())
 
-const filters = reactive({})
+const filters = reactive({
+  time_from: new Date(Date.now() - 3600e3).toISOString(),
+  time_to: new Date().toISOString(),
+})
 const stats = reactive({})
 const llmStats = reactive({})
 const items = ref([])
@@ -106,9 +109,8 @@ const filterPanel = ref(null)
 
 const hasFilters = computed(() => Object.keys(filters).length > 0)
 
-const statsHours = computed(
-  () => Number.parseInt(filters.since_hours || '1', 10) || 1,
-)
+// 总览/后端/每日趋势使用固定的默认窗口，不受时间筛选影响（时间筛选只作用于请求列表）
+const timeWindow = computed(() => ({ secs: 3600, label: t('filterLast1h') }))
 
 const quickCounts = computed(() => {
   const c = { ok: 0, err4xx: 0, err5xx: 0, stream: 0 }
@@ -136,9 +138,15 @@ function setFilters(f) {
   Object.assign(filters, f)
 }
 
+// 总览类面板使用的筛选条件：去掉时间范围（时间范围只影响请求列表）
+function overviewFilters() {
+  const { time_from, time_to, ...rest } = filters
+  return rest
+}
+
 async function loadStats() {
   try {
-    const base = { hours: statsHours.value, ...filters }
+    const base = overviewFilters()
     const [data, llm] = await Promise.all([
       fetchStats(base),
       fetchStats({ ...base, chat_completions_only: 'true' }),
@@ -184,7 +192,7 @@ async function loadMore() {
 
 async function loadBackendStats() {
   try {
-    backendStats.value = await fetchStatsByBackend(statsHours.value)
+    backendStats.value = await fetchStatsByBackend(overviewFilters())
   } catch {
     /* ignore */
   }
@@ -192,7 +200,7 @@ async function loadBackendStats() {
 
 async function loadDailyStats() {
   try {
-    const data = await fetchDailyStats(30, filters)
+    const data = await fetchDailyStats(30, overviewFilters())
     dailyStats.value = data.items || []
   } catch {
     /* ignore */

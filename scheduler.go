@@ -33,7 +33,11 @@ type Scheduler struct {
 	infof       func(format string, args ...any)
 	probe       func(ctx context.Context, url string) bool
 
-	mu            sync.Mutex
+	mu sync.Mutex
+	// switchMu 串行化整个进程切换过程（ensureTarget），防止并发切换覆盖 readyCh，
+	// 导致等待者持有的旧 channel 永不关闭。
+	switchMu sync.Mutex
+
 	mode          string
 	readyOK       bool
 	readyCh       chan struct{}
@@ -211,8 +215,13 @@ func (s *Scheduler) Loop(ctx context.Context) {
 }
 
 // ensureTarget 将当前进程切换到 target 模式并等待就绪。
-// 通过内部锁串行化切换，防止并发重复切换。
+// 通过 switchMu 串行化整个切换过程（含 drain/停止旧进程/等待就绪），
+// 防止并发切换互相覆盖 readyCh 导致等待者永久阻塞。
 func (s *Scheduler) ensureTarget(ctx context.Context, target, command, readinessURL, readinessAuth, logFile string) (chan struct{}, error) {
+	// 串行化切换：同一时刻只允许一个切换在执行，避免并发 ensureTarget 覆盖 readyCh。
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
+
 	// 二次检查，避免竞态下重复切换。
 	s.mu.Lock()
 	if s.mode == target && s.readyOK {
@@ -289,20 +298,25 @@ func (s *Scheduler) ensureTarget(ctx context.Context, target, command, readiness
 	return newReady, nil
 }
 
-// markReadyClosed 持锁关闭 ready channel 并记录状态，保证每个 channel 只 close 一次。
-// 所有 ready channel 的关闭都必须经由这里，避免并发 close 导致 panic。
+// markReadyClosed 持锁关闭 ready channel 并记录状态。
+// 仅当 ch 仍是当前就绪 channel（s.readyCh）时才关闭，且保证只 close 一次：
+//   - 并发 close 同一 channel 不会 panic；
+//   - 被新切换覆盖的旧 channel 不再关闭，避免其"已关闭"标志吞掉新 channel 的关闭，
+//     导致等待新 channel 的请求永久阻塞。
 func (s *Scheduler) markReadyClosed(ch chan struct{}) {
 	if ch == nil {
 		return
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readyCh != ch {
+		return
+	}
 	if s.readyChClosed {
-		s.mu.Unlock()
 		return
 	}
 	s.readyChClosed = true
 	close(ch)
-	s.mu.Unlock()
 }
 
 // reconcileReady 周期性检查当前模式进程的就绪状态，用于修复"大模型启动慢导致

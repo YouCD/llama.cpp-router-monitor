@@ -17,8 +17,7 @@ export function queryString(obj) {
 }
 
 export async function fetchStats(filters) {
-  const hours = Number.parseInt(filters.since_hours || '1', 10) || 1
-  return fetchJSON(`/_proxy/stats?${queryString({ hours, ...filters })}`)
+  return fetchJSON(`/_proxy/stats?${queryString(filters)}`)
 }
 
 export async function fetchRequests(limit, offset, filters) {
@@ -56,8 +55,8 @@ export async function fetchBackends() {
   return Array.isArray(data.items) ? data.items : []
 }
 
-export async function fetchStatsByBackend(hours) {
-  const data = await fetchJSON(`/_proxy/stats-by-backend?${queryString({ hours })}`)
+export async function fetchStatsByBackend(filters = {}) {
+  const data = await fetchJSON(`/_proxy/stats-by-backend?${queryString(filters)}`)
   return Array.isArray(data.items) ? data.items : []
 }
 

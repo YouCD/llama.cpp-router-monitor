@@ -304,7 +304,7 @@ Supported request filters:
 - `model`
 - `method`
 - `status`
-- `since_hours`
+- `time_from` / `time_to` — absolute time window (RFC3339, e.g. `2026-09-13T00:00:00Z`); when omitted, falls back to the `hours` parameter
 - `stream`
 - `errors_only`
 - `with_tokens`

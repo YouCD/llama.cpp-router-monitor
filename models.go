@@ -78,7 +78,8 @@ type RequestFilter struct {
 	Backend             string
 	Search              string
 	StatusCode          int
-	SinceHours          int
+	TimeFrom            time.Time // 开始时间（含），零值表示不限
+	TimeTo              time.Time // 结束时间（含），零值表示不限
 	Streaming           *bool
 	ErrorsOnly          bool
 	WithTokens          bool

@@ -33,15 +33,15 @@
         @keyup.enter="apply"
         style="width: 110px"
       />
-      <el-input
-        :model-value="f.since"
-        clearable
-        @update:model-value="v => (f.since = v)"
-        @keyup.enter="apply"
-        style="width: 96px"
-      >
-        <template #suffix><span class="since-unit">h</span></template>
-      </el-input>
+      <el-date-picker
+        v-model="f.timeRange"
+        type="datetimerange"
+        single-panel
+        class="time-range"
+        range-separator="~"
+        :start-placeholder="t('filterStartTime')"
+        :end-placeholder="t('filterEndTime')"
+      />
       <el-button
         text
         :icon="Filter"
@@ -96,7 +96,7 @@ const f = reactive({
   backend: '',
   method: '',
   status: '',
-  since: '1',
+  timeRange: [new Date(Date.now() - 3600e3), new Date()],
   stream: '',
   errors_only: false,
   with_tokens: false,
@@ -133,7 +133,10 @@ function collect() {
   if (f.backend) filters.backend = f.backend
   if (f.method) filters.method = f.method
   if (f.status) filters.status = f.status.trim()
-  if (f.since) filters.since_hours = f.since.trim()
+  if (f.timeRange && f.timeRange.length === 2 && f.timeRange[0] && f.timeRange[1]) {
+    filters.time_from = new Date(f.timeRange[0]).toISOString()
+    filters.time_to = new Date(f.timeRange[1]).toISOString()
+  }
   if (f.stream !== '') filters.stream = f.stream
   if (f.errors_only) filters.errors_only = 'true'
   if (f.with_tokens) filters.with_tokens = 'true'
@@ -152,7 +155,7 @@ function clearFilters() {
   f.backend = ''
   f.method = ''
   f.status = ''
-  f.since = '1'
+  f.timeRange = [new Date(Date.now() - 3600e3), new Date()]
   f.stream = ''
   f.errors_only = false
   f.with_tokens = false

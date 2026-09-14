@@ -4,11 +4,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
@@ -74,7 +76,7 @@ func newPostgreSQLDatabase(cfg PostgreSQLConfig) (*PostgreSQLDatabase, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("postgres", cfg.DSN)
+	db, err := sql.Open("pgx", cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("open postgresql: %w", err)
 	}
@@ -95,7 +97,7 @@ func newPostgreSQLDatabase(cfg PostgreSQLConfig) (*PostgreSQLDatabase, error) {
 // exist, creates it automatically by connecting to the maintenance database
 // ("postgres") first.
 func ensurePostgresDatabase(dsn string) error {
-	probe, err := sql.Open("postgres", dsn)
+	probe, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("open postgresql: %w", err)
 	}
@@ -120,7 +122,7 @@ func ensurePostgresDatabase(dsn string) error {
 	if err != nil {
 		return fmt.Errorf("build admin postgresql dsn: %w", err)
 	}
-	admin, err := sql.Open("postgres", adminDSN)
+	admin, err := sql.Open("pgx", adminDSN)
 	if err != nil {
 		return fmt.Errorf("open postgresql admin connection: %w", err)
 	}
@@ -170,11 +172,51 @@ func pgAdminDSN(dsn string) (string, error) {
 	return strings.Join(parts, " "), nil
 }
 
-// parsePostgresKV parses a lib/pq DSN into a key/value map. Both URL form
+// postgresURLToKV converts a URL-form DSN (postgres://user:pass@host:port/db?opts)
+// into a key=value DSN, mimicking lib/pq's ParseURL.
+func postgresURLToKV(dsn string) (string, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", err
+	}
+	kv := make(map[string]string)
+	if u.Host != "" {
+		if u.Port() != "" {
+			kv["host"] = u.Hostname()
+			kv["port"] = u.Port()
+		} else {
+			kv["host"] = u.Host
+		}
+	}
+	if u.User != nil {
+		kv["user"] = u.User.Username()
+		if pass, ok := u.User.Password(); ok {
+			kv["password"] = pass
+		}
+	}
+	if u.Path != "" && u.Path != "/" {
+		kv["dbname"] = strings.TrimPrefix(u.Path, "/")
+	}
+	for k, vs := range u.Query() {
+		if len(vs) > 0 {
+			kv[k] = vs[0]
+		}
+	}
+	parts := make([]string, 0, len(kv))
+	for k, v := range kv {
+		if strings.ContainsAny(v, " '\\") {
+			v = "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		}
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, " "), nil
+}
+
+// parsePostgresKV parses a postgres DSN into a key/value map. Both URL form
 // (postgres://...) and key=value form are accepted.
 func parsePostgresKV(dsn string) (map[string]string, error) {
 	if strings.Contains(dsn, "://") {
-		parsed, err := pq.ParseURL(dsn)
+		parsed, err := postgresURLToKV(dsn)
 		if err != nil {
 			return nil, err
 		}
@@ -229,9 +271,9 @@ func isMissingDatabaseError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		return pqErr.Code == "3D000" || pqErr.Code == "42P01"
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "3D000" || pgErr.Code == "42P01"
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "does not exist") || strings.Contains(msg, "does not exist.")
@@ -402,7 +444,7 @@ func initPostgreSQLDB(db Database) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS requests (
 			id TEXT PRIMARY KEY,
-			created_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
 			method TEXT NOT NULL,
 			path TEXT NOT NULL,
 			query TEXT,
@@ -433,7 +475,7 @@ func initPostgreSQLDB(db Database) error {
 		`CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);`,
 		`CREATE TABLE IF NOT EXISTS backend_metrics (
 			id SERIAL PRIMARY KEY,
-			created_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
 			backend_url TEXT NOT NULL,
 			metric_name TEXT NOT NULL,
 			metric_value DOUBLE PRECISION NOT NULL

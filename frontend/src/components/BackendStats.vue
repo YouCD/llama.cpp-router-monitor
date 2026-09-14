@@ -38,14 +38,14 @@ import {
 
 const props = defineProps({
   items: { type: Array, default: () => [] },
-  hours: { type: Number, default: 1 },
+  windowSec: { type: Number, default: 3600 },
 })
 defineEmits(['select'])
 
 const bars = computed(() => {
   const list = props.items || []
   const maxReqs = Math.max(1, ...list.map((b) => b.requests || 0))
-  const secs = (props.hours || 1) * 3600
+  const secs = props.windowSec || 1
   return list.map((b) => {
     const requests = b.requests || 0
     const errorRate = b.error_rate || 0

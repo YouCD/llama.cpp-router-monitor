@@ -424,7 +424,7 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 		}
 	}
 
-	stats, err := svc.getStats(24, RequestFilter{})
+	stats, err := svc.getStats(RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
 		}
 	}
 
-	stats, err := svc.getStats(24, RequestFilter{})
+	stats, err := svc.getStats(RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
@@ -759,7 +759,8 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 	}
 
 	streamTrue := true
-	stats, err := svc.getStats(24, RequestFilter{Streaming: &streamTrue, WithTokens: true, Path: "/v1/chat/completions"})
+	statsFilter := RequestFilter{Streaming: &streamTrue, WithTokens: true, Path: "/v1/chat/completions", TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()}
+	stats, err := svc.getStats(statsFilter)
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
@@ -1005,7 +1006,7 @@ func TestGetStatsByBackend(t *testing.T) {
 		}
 	}
 
-	items, err := svc.getStatsByBackend(24)
+	items, err := svc.getStatsByBackend(RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("getStatsByBackend: %v", err)
 	}

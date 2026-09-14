@@ -368,6 +368,13 @@ body {
 .filter-bar .el-input {
   width: 180px;
 }
+.filter-bar .time-range {
+  --el-date-editor-width: 360px;
+  width: 360px !important;
+  max-width: 360px;
+  flex: 0 0 auto;
+}
+
 .filter-bar .filter-check {
   display: flex;
   gap: 12px;

@@ -28,14 +28,13 @@ const props = defineProps({
   llmStats: { type: Object, default: () => ({}) },
   hasFilters: { type: Boolean, default: false },
   outputSec: { type: Number, default: 0 },
-  hours: { type: Number, default: 1 },
+  windowLabel: { type: String, default: '' },
 })
 
 const groups = computed(() => {
   const s = props.stats || {}
   const llm = props.llmStats || {}
-  const hours = props.hours || 1
-  const windowLabel = t('metricRecentHours', { n: hours })
+  const windowLabel = props.windowLabel || ''
   const totalMatching = props.hasFilters
     ? (s.matching_total_requests || 0)
     : (s.lifetime_total_requests || 0)

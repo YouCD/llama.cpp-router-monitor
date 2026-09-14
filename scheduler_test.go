@@ -274,8 +274,12 @@ func TestMarkReadyClosedConcurrent(t *testing.T) {
 	s.SetLogger(func(string, ...any) {})
 
 	ch := make(chan struct{})
+	s.mu.Lock()
+	s.readyCh = ch
+	s.mu.Unlock()
+
 	var wg sync.WaitGroup
-	// 并发对同一 channel 调用 markReadyClosed，不应 panic（double-close 防护）。
+	// 并发对当前 ready channel 调用 markReadyClosed，不应 panic（double-close 防护）。
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func() {
@@ -288,5 +292,93 @@ func TestMarkReadyClosedConcurrent(t *testing.T) {
 	case <-ch:
 	default:
 		t.Fatal("expected channel to be closed")
+	}
+}
+
+// TestMarkReadyClosedIgnoresStaleChannel 验证被新切换覆盖的旧 channel 不会被关闭，
+// 避免旧 channel 的关闭标志吞掉当前 channel 的关闭。
+func TestMarkReadyClosedIgnoresStaleChannel(t *testing.T) {
+	s := newTestScheduler(t, time.Hour)
+	stale := make(chan struct{})
+	cur := make(chan struct{})
+
+	s.mu.Lock()
+	s.readyCh = cur
+	s.readyChClosed = false
+	s.mu.Unlock()
+
+	// 过期 channel 的关闭请求必须被忽略。
+	s.markReadyClosed(stale)
+	select {
+	case <-stale:
+		t.Fatal("stale channel must not be closed")
+	default:
+	}
+
+	// 当前 channel 正常关闭，且重复调用安全。
+	s.markReadyClosed(cur)
+	s.markReadyClosed(cur)
+	select {
+	case <-cur:
+	default:
+		t.Fatal("current ready channel must be closed")
+	}
+}
+
+// TestStartBackgroundThenEnsureCodingStaleClose 复现生产事故：代理启动时
+// background 切换先完成并关闭其 ready channel 后，首个 coding 请求再触发切换。
+// 旧实现中 background 的关闭标志（readyChClosed）吞掉了 coding channel 的关闭，
+// 导致所有 coding 请求永久挂起。
+func TestStartBackgroundThenEnsureCodingStaleClose(t *testing.T) {
+	s := newTestScheduler(t, time.Hour)
+	ctx := context.Background()
+
+	var probeMu sync.Mutex
+	probeOK := false
+	s.SetProbe(func(context.Context, string) bool {
+		probeMu.Lock()
+		defer probeMu.Unlock()
+		return probeOK
+	})
+
+	// 启动 background 切换（模拟 Start），初始探针失败使其等待。
+	bgDone := make(chan struct{})
+	go func() {
+		defer close(bgDone)
+		_, _ = s.ensureTarget(ctx, modeBackground, "", "http://127.0.0.1:8080", "", "")
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// 让 background 就绪并等待其切换完成。
+	probeMu.Lock()
+	probeOK = true
+	probeMu.Unlock()
+	<-bgDone
+
+	if s.mode != modeBackground || !s.readyOK {
+		t.Fatalf("expected background ready, got mode=%s ready=%v", s.mode, s.readyOK)
+	}
+
+	// 现在触发 coding 切换：channel 必须被关闭，不得永久阻塞。
+	ready, err := s.EnsureCoding(ctx)
+	if err != nil {
+		t.Fatalf("ensure coding: %v", err)
+	}
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coding ready channel not closed after background switch")
+	}
+
+	if s.mode != modeCoding {
+		t.Fatalf("expected coding mode, got %s", s.mode)
+	}
+	if !s.readyOK {
+		t.Fatal("expected readyOK=true")
+	}
+	select {
+	case <-s.getReadyCh():
+	default:
+		t.Fatal("expected current ready channel to be closed")
 	}
 }

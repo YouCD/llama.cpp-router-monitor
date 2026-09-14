@@ -103,6 +103,19 @@ export function fmtDateTime(value) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+export function fmtWindowLabel(from, to) {
+  const f = new Date(from)
+  const t = new Date(to)
+  if (Number.isNaN(f.getTime()) || Number.isNaN(t.getTime())) return '-'
+  const p = (x) => String(x).padStart(2, '0')
+  const time = (d) => `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  const date = (d) => `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`
+  if (f.toDateString() === t.toDateString()) {
+    return `${date(f)} ${time(f)} ~ ${time(t)}`
+  }
+  return `${date(f)} ${time(f)} ~ ${date(t)} ${time(t)}`
+}
+
 export function fmtDuration(value) {
   if (!Number.isFinite(value) || value <= 0) return '-'
   if (value < 1000) return `${Math.round(value)}ms`

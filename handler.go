@@ -56,7 +56,8 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	case p == "/stats":
 		hours := getQueryInt(r, "hours", 24)
 		f := parseRequestFilter(r)
-		stats, err := s.getStats(hours, f)
+		f.TimeFrom, f.TimeTo = s.effectiveWindow(f, hours)
+		stats, err := s.getStats(f)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -78,7 +79,9 @@ func (s *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case p == "/stats-by-backend":
 		hours := getQueryInt(r, "hours", 24)
-		items, err := s.getStatsByBackend(hours)
+		f := parseRequestFilter(r)
+		f.TimeFrom, f.TimeTo = s.effectiveWindow(f, hours)
+		items, err := s.getStatsByBackend(f)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -155,15 +158,35 @@ func parseRequestFilter(r *http.Request) RequestFilter {
 		Backend:             strings.TrimSpace(r.URL.Query().Get("backend")),
 		Search:              strings.TrimSpace(r.URL.Query().Get("q")),
 		StatusCode:          getQueryInt(r, "status", 0),
-		SinceHours:          getQueryInt(r, "since_hours", 0),
 		ErrorsOnly:          getQueryBool(r, "errors_only", false),
 		WithTokens:          getQueryBool(r, "with_tokens", false),
 		ChatCompletionsOnly: getQueryBool(r, "chat_completions_only", false),
+	}
+	if t, ok := parseFilterTime(r.URL.Query().Get("time_from")); ok {
+		f.TimeFrom = t
+	}
+	if t, ok := parseFilterTime(r.URL.Query().Get("time_to")); ok {
+		f.TimeTo = t
 	}
 	if stream, ok := getOptionalQueryBool(r, "stream"); ok {
 		f.Streaming = &stream
 	}
 	return f
+}
+
+// parseFilterTime 解析筛选时间参数，支持 RFC3339（含时区，如 2026-09-13T00:50:59+08:00 / ...Z）
+// 及本地时间写法，解析成功时返回 UTC 时间。
+func parseFilterTime(v string) (time.Time, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 func (s *Server) handleRaw(w http.ResponseWriter, p string) {
 	parts := strings.Split(strings.TrimPrefix(p, "/raw/"), "/")
