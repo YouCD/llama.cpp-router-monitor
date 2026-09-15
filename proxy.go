@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -588,17 +587,17 @@ func (s *Server) pollBackendMetricsURL(ctx context.Context, baseURL string) {
 	}
 	now := s.createdAtValue(time.Now().UTC())
 	_ = retryDBWrite(func() error {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return err
+		tx := s.db.Begin()
+		if tx.Error != nil {
+			return tx.Error
 		}
 		for name, value := range metrics {
-			if _, err := tx.Exec(s.rebind(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`), now, baseURL, name, value); err != nil {
+			if err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, baseURL, name, value).Error; err != nil {
 				_ = tx.Rollback()
 				return err
 			}
 		}
-		return tx.Commit()
+		return tx.Commit().Error
 	})
 }
 
@@ -624,87 +623,11 @@ func parsePrometheusText(text string) map[string]float64 {
 	return out
 }
 
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanRequest(s scanner, isPostgres bool) (RequestRecord, error) {
-	var rec RequestRecord
-	var createdAt string
-	var query sql.NullString
-	var clientIP sql.NullString
-	var backendURL sql.NullString
-	var model sql.NullString
-	var errorText sql.NullString
-	var requestRawPath sql.NullString
-	var responseRawPath sql.NullString
-	var userAgent sql.NullString
-
-	var streamVal any
-	if isPostgres {
-		var v bool
-		streamVal = &v
-	} else {
-		var v int
-		streamVal = &v
-	}
-
-	err := s.Scan(
-		&rec.ID,
-		&createdAt,
-		&rec.Method,
-		&rec.Path,
-		&query,
-		&clientIP,
-		&backendURL,
-		&model,
-		streamVal,
-		&rec.StatusCode,
-		&errorText,
-		&rec.RequestBytes,
-		&rec.ResponseBytes,
-		&rec.PromptTokens,
-		&rec.CachedPromptTokens,
-		&rec.CacheHitPct,
-		&rec.CompletionTokens,
-		&rec.TotalTokens,
-		&rec.PromptMs,
-		&rec.CompletionMs,
-		&rec.TotalMs,
-		&rec.FirstByteMs,
-		&rec.ChunksCount,
-		&requestRawPath,
-		&responseRawPath,
-		&userAgent,
-	)
-	if err != nil {
-		return rec, err
-	}
-	rec.Query = query.String
-	rec.ClientIP = clientIP.String
-	rec.BackendURL = backendURL.String
-	rec.Model = model.String
-	rec.ErrorText = errorText.String
-	rec.RequestRawPath = requestRawPath.String
-	rec.ResponseRawPath = responseRawPath.String
-	rec.UserAgent = userAgent.String
-	t, err := time.Parse(time.RFC3339Nano, createdAt)
-	if err == nil {
-		rec.CreatedAt = t
-	}
-	if isPostgres {
-		if v, ok := streamVal.(*bool); ok {
-			rec.IsStreaming = *v
-		}
-	} else {
-		if v, ok := streamVal.(*int); ok {
-			rec.IsStreaming = *v == 1
-		}
-	}
+// normalizeCacheHit 在历史数据未记录缓存命中率时按 token 数补齐。
+func normalizeCacheHit(rec *RequestRecord) {
 	if rec.CacheHitPct == 0 && rec.PromptTokens > 0 && rec.CachedPromptTokens > 0 {
 		rec.CacheHitPct = float64(rec.CachedPromptTokens) / float64(rec.PromptTokens) * 100
 	}
-	return rec, nil
 }
 
 func enrichRequestRates(rec RequestRecord) RequestRecord {

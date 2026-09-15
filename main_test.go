@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestParseResponseMetaJSON(t *testing.T) {
@@ -813,7 +811,7 @@ func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) 
 			Path: "proxy.db",
 		},
 	}
-	db, err := NewDatabase(sqlCfg, dataDir)
+	db, err := NewDatabase(sqlCfg, dataDir, "debug")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -845,7 +843,7 @@ func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) 
 	}
 
 	cleanup := func() {
-		db.Close()
+		_ = CloseDatabase(db)
 	}
 	return svc, db, cleanup
 }

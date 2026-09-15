@@ -397,11 +397,11 @@ func TestHandleProxyWithModelRewriteAndAPIKey(t *testing.T) {
 
 	dataDir := t.TempDir()
 	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
-	db, err := NewDatabase(sqlCfg, dataDir)
+	db, err := NewDatabase(sqlCfg, dataDir, "debug")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer CloseDatabase(db)
 	if err := InitDB(db, "sqlite"); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
@@ -461,11 +461,11 @@ func TestHandleProxyBackendKeyDoesNotOverrideClientKeyWhenEmpty(t *testing.T) {
 
 	dataDir := t.TempDir()
 	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
-	db, err := NewDatabase(sqlCfg, dataDir)
+	db, err := NewDatabase(sqlCfg, dataDir, "debug")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer CloseDatabase(db)
 	if err := InitDB(db, "sqlite"); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
@@ -521,11 +521,11 @@ func TestHandleProxyStripsVersionPrefixWhenBackendHasV1(t *testing.T) {
 
 	dataDir := t.TempDir()
 	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
-	db, err := NewDatabase(sqlCfg, dataDir)
+	db, err := NewDatabase(sqlCfg, dataDir, "debug")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer CloseDatabase(db)
 	if err := InitDB(db, "sqlite"); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
@@ -591,100 +591,33 @@ func TestBuildProxyPath(t *testing.T) {
 	}
 }
 
-func TestRebindPostgres(t *testing.T) {
-	queries := []struct {
-		in, want string
-	}{
-		{
-			`SELECT * FROM requests WHERE id = ?`,
-			`SELECT * FROM requests WHERE id = $1`,
-		},
-		{
-			`INSERT INTO requests (id, model) VALUES (?, ?)`,
-			`INSERT INTO requests (id, model) VALUES ($1, $2)`,
-		},
-		{
-			`UPDATE requests SET status_code = ? WHERE id = ?`,
-			`UPDATE requests SET status_code = $1 WHERE id = $2`,
-		},
-		{
-			`SELECT ?`,
-			`SELECT $1`,
-		},
-	}
-
-	for _, q := range queries {
-		if got := rebindPostgres(q.in); got != q.want {
-			t.Fatalf("rebindPostgres(%q) = %q, want %q", q.in, got, q.want)
-		}
-	}
-}
-
-func TestRebindPostgresIgnoresQuotedStrings(t *testing.T) {
-	// Question marks inside string literals must not be converted.
-	in := `SELECT id, model FROM requests WHERE path = '/v1/chat?x=1' AND id = ?`
-	want := `SELECT id, model FROM requests WHERE path = '/v1/chat?x=1' AND id = $1`
-	if got := rebindPostgres(in); got != want {
-		t.Fatalf("rebindPostgres(%q) = %q, want %q", in, got, want)
-	}
-}
-
 func TestDatabaseTypeDetection(t *testing.T) {
-	sqliteDB := &SQLiteDatabase{}
-	pgDB := &PostgreSQLDatabase{}
+	dataDir := t.TempDir()
+	sqlCfg := DatabaseConfig{Type: "sqlite", SQLite: SQLiteConfig{Path: "proxy.db"}}
+	db, err := NewDatabase(sqlCfg, dataDir, "debug")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer CloseDatabase(db)
 
-	if sqliteDB.GetType() != "sqlite" {
-		t.Fatalf("sqlite type=%q", sqliteDB.GetType())
+	if db.Dialector.Name() != "sqlite" {
+		t.Fatalf("sqlite type=%q", db.Dialector.Name())
 	}
-	if pgDB.GetType() != "postgresql" {
-		t.Fatalf("pg type=%q", pgDB.GetType())
-	}
-
-	// SQLite Rebind is a no-op
-	if got := sqliteDB.Rebind(`SELECT * FROM t WHERE id = ?`); got != `SELECT * FROM t WHERE id = ?` {
-		t.Fatalf("sqlite rebind changed query: %q", got)
-	}
-
-	// PostgreSQL Rebind converts placeholders
-	if got := pgDB.Rebind(`SELECT * FROM t WHERE id = ?`); got != `SELECT * FROM t WHERE id = $1` {
-		t.Fatalf("pg rebind=%q", got)
-	}
-}
-
-func TestStreamValue(t *testing.T) {
-	sqliteDB := &SQLiteDatabase{}
-	pgDB := &PostgreSQLDatabase{}
-
-	sqliteSvc := &Server{db: sqliteDB}
-	pgSvc := &Server{db: pgDB}
-
-	if v := sqliteSvc.streamValue(true); v != 1 {
-		t.Fatalf("sqlite streamValue(true)=%v", v)
-	}
-	if v := sqliteSvc.streamValue(false); v != 0 {
-		t.Fatalf("sqlite streamValue(false)=%v", v)
-	}
-	if v := pgSvc.streamValue(true); v != true {
-		t.Fatalf("pg streamValue(true)=%v", v)
-	}
-	if v := pgSvc.streamValue(false); v != false {
-		t.Fatalf("pg streamValue(false)=%v", v)
+	if isPostgresDB(db) {
+		t.Fatalf("sqlite reported as postgres")
 	}
 }
 
 func TestInitPostgreSQLDBSQL(t *testing.T) {
-	// Verify PostgreSQL DDL uses valid types and no SQLite-only syntax.
-	pgCfg := PostgreSQLConfig{DSN: "postgres://user:pass@localhost:5432/db"}
-
-	// Create a real PostgreSQLDatabase via sql.Open but never Ping (no server).
-	// We only need GetType for InitDB branching; init DDL is validated by inspection.
-	_ = pgCfg
-
-	// The DDL statements are constructed in initPostgreSQLDB. Ensure they exist
-	// and reference BOOLEAN/BIGINT/SERIAL which are PostgreSQL-native.
-	db := &PostgreSQLDatabase{}
-	if db.GetType() != "postgresql" {
-		t.Fatalf("unexpected type %q", db.GetType())
+	// Verify PostgreSQL DDL uses native types and no SQLite-only syntax.
+	all := strings.Join(pgDDLStatements, "\n")
+	for _, want := range []string{"TIMESTAMPTZ", "BOOLEAN", "BIGINT", "SERIAL", "DOUBLE PRECISION"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("pg DDL missing %q", want)
+		}
+	}
+	if strings.Contains(all, "AUTOINCREMENT") {
+		t.Fatalf("pg DDL must not use AUTOINCREMENT")
 	}
 }
 

@@ -81,6 +81,7 @@
 import { ref, computed, reactive, watch, onUnmounted } from 'vue'
 import { Filter } from '@element-plus/icons-vue'
 import { t } from '../i18n'
+import { todayRange } from '../utils'
 
 const props = defineProps({
   models: { type: Array, default: () => [] },
@@ -96,7 +97,7 @@ const f = reactive({
   backend: '',
   method: '',
   status: '',
-  timeRange: [new Date(Date.now() - 3600e3), new Date()],
+  timeRange: todayRange(),
   stream: '',
   errors_only: false,
   with_tokens: false,
@@ -155,7 +156,7 @@ function clearFilters() {
   f.backend = ''
   f.method = ''
   f.status = ''
-  f.timeRange = [new Date(Date.now() - 3600e3), new Date()]
+  f.timeRange = todayRange()
   f.stream = ''
   f.errors_only = false
   f.with_tokens = false

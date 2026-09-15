@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/youcd/toolkit/log"
+	"gorm.io/gorm"
 )
 
 func (s *Server) saveRawPayload(requestID string, kind string, data []byte) (string, error) {
@@ -60,7 +62,7 @@ func readGzipFile(path string) ([]byte, error) {
 	return io.ReadAll(gr)
 }
 func normalizeDB(db Database) error {
-	_, err := db.Exec(`UPDATE requests SET
+	return db.Exec(`UPDATE requests SET
 		query = COALESCE(query, ''),
 		client_ip = COALESCE(client_ip, ''),
 		backend_url = COALESCE(backend_url, ''),
@@ -77,8 +79,7 @@ func normalizeDB(db Database) error {
 			error_text IS NULL OR
 			request_raw_path IS NULL OR
 			response_raw_path IS NULL OR
-			user_agent IS NULL`)
-	return err
+			user_agent IS NULL`).Error
 }
 
 func retryDBWrite(op func() error) error {
@@ -139,23 +140,19 @@ func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
 	return "", false
 }
 func repairStuckRequests(db Database, dataDir string) error {
-	rows, err := db.Query(`SELECT
+	var stuck []RequestRecord
+	if err := db.Raw(`SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
 		is_streaming, status_code, error_text, request_bytes, response_bytes,
 		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
 		prompt_ms, completion_ms, total_ms, first_byte_ms, chunks_count,
 		request_raw_path, response_raw_path, user_agent
-		FROM requests WHERE status_code = 0 AND (response_raw_path IS NULL OR response_raw_path = '')`)
-	if err != nil {
+		FROM requests WHERE status_code = 0 AND (response_raw_path IS NULL OR response_raw_path = '')`).Scan(&stuck).Error; err != nil {
 		return err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		rec, err := scanRequest(rows, db.GetType() == "postgresql")
-		if err != nil {
-			return err
-		}
+	for i := range stuck {
+		rec := stuck[i]
 		respRel, ok := findRawPayloadPath(dataDir, rec.ID, "response")
 		if !ok {
 			continue
@@ -185,7 +182,7 @@ func repairStuckRequests(db Database, dataDir string) error {
 		}
 		rec.ResponseRawPath = respRel
 		if err := retryDBWrite(func() error {
-			_, err := db.Exec(db.Rebind(`UPDATE requests SET
+			return db.Exec(`UPDATE requests SET
 				model = ?,
 				status_code = ?,
 				error_text = ?,
@@ -201,36 +198,34 @@ func repairStuckRequests(db Database, dataDir string) error {
 				first_byte_ms = ?,
 				chunks_count = ?,
 				response_raw_path = ?
-				WHERE id = ?`),
+				WHERE id = ?`,
 				rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
 				rec.PromptTokens, rec.CachedPromptTokens, rec.CacheHitPct, rec.CompletionTokens, rec.TotalTokens,
 				rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
 				rec.ChunksCount, rec.ResponseRawPath, rec.ID,
-			)
-			return err
+			).Error
 		}); err != nil {
 			continue
 		}
 	}
-	return rows.Err()
+	return nil
 }
 func (s *Server) insertRequest(rec RequestRecord) error {
 	return retryDBWrite(func() error {
-		_, err := s.db.Exec(s.rebind(`INSERT INTO requests (
+		return s.db.Exec(`INSERT INTO requests (
 			id, created_at, method, path, query, client_ip, backend_url, model,
 			is_streaming, request_bytes, request_raw_path, user_agent
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, s.createdAtValue(rec.CreatedAt), rec.Method, rec.Path, rec.Query,
-			rec.ClientIP, rec.BackendURL, rec.Model, s.streamValue(rec.IsStreaming),
+			rec.ClientIP, rec.BackendURL, rec.Model, rec.IsStreaming,
 			rec.RequestBytes, rec.RequestRawPath, rec.UserAgent,
-		)
-		return err
+		).Error
 	})
 }
 
 func (s *Server) finishRequest(id string, rec RequestRecord) error {
 	return retryDBWrite(func() error {
-		_, err := s.db.Exec(s.rebind(`UPDATE requests SET
+		return s.db.Exec(`UPDATE requests SET
 			model = ?,
 			status_code = ?,
 			error_text = ?,
@@ -246,13 +241,12 @@ func (s *Server) finishRequest(id string, rec RequestRecord) error {
 			first_byte_ms = ?,
 			chunks_count = ?,
 			response_raw_path = ?
-			WHERE id = ?`),
+			WHERE id = ?`,
 			rec.Model, rec.StatusCode, rec.ErrorText, rec.ResponseBytes,
 			rec.PromptTokens, rec.CachedPromptTokens, rec.CacheHitPct, rec.CompletionTokens, rec.TotalTokens,
 			rec.PromptMs, rec.CompletionMs, rec.TotalMs, rec.FirstByteMs,
 			rec.ChunksCount, rec.ResponseRawPath, id,
-		)
-		return err
+		).Error
 	})
 }
 
@@ -277,36 +271,27 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
-	rows, err := s.db.Query(s.rebind(query), args...)
-	if err != nil {
+	out := make([]RequestRecord, 0, limit)
+	if err := s.db.Raw(query, args...).Scan(&out).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := make([]RequestRecord, 0, limit)
-	for rows.Next() {
-		rec, err := scanRequest(rows, s.isPostgres())
-		if err != nil {
-			return nil, err
-		}
-		rec = enrichRequestRates(rec)
-		out = append(out, rec)
+	for i := range out {
+		normalizeCacheHit(&out[i])
+		out[i] = enrichRequestRates(out[i])
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Server) getRequestByID(id string) (RequestRecord, error) {
-	row := s.db.QueryRow(s.rebind(`SELECT
-		id, created_at, method, path, query, client_ip, backend_url, model,
-		is_streaming, status_code, error_text, request_bytes, response_bytes,
-		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
-		prompt_ms, completion_ms, total_ms, first_byte_ms, chunks_count,
-		request_raw_path, response_raw_path, user_agent
-		FROM requests WHERE id = ?`), id)
-	rec, err := scanRequest(row, s.isPostgres())
+	var rec RequestRecord
+	err := s.db.Where("id = ?", id).Take(&rec).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return rec, sql.ErrNoRows
+		}
 		return rec, err
 	}
+	normalizeCacheHit(&rec)
 	return enrichRequestRates(rec), nil
 }
 
@@ -330,12 +315,9 @@ func (s *Server) deleteRequestByID(id string) error {
 	}
 	var affected int64
 	err = retryDBWrite(func() error {
-		res, err := s.db.Exec(s.rebind(`DELETE FROM requests WHERE id = ?`), id)
-		if err != nil {
-			return err
-		}
-		affected, err = res.RowsAffected()
-		return err
+		res := s.db.Exec(`DELETE FROM requests WHERE id = ?`, id)
+		affected = res.RowsAffected
+		return res.Error
 	})
 	if err != nil {
 		return err
@@ -390,7 +372,8 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 	args := []any{}
 	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
 
-	err := s.db.QueryRow(s.rebind(query), args...).Scan(
+	row := s.db.Raw(query, args...).Row()
+	if err := row.Scan(
 		&totalRequests,
 		&promptTokens,
 		&completionTokens,
@@ -403,14 +386,14 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 		&avgFirstByteMs,
 		&errorsCount,
 		&streamCount,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, err
 	}
-	if err := s.db.QueryRow(`SELECT
+	row = s.db.Raw(`SELECT
 		COUNT(*),
 		COALESCE(SUM(total_tokens),0)
-		FROM requests`).Scan(&lifetimeRequests, &lifetimeTokens); err != nil {
+		FROM requests`).Row()
+	if err := row.Scan(&lifetimeRequests, &lifetimeTokens); err != nil {
 		return nil, err
 	}
 
@@ -451,76 +434,43 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 }
 
 func (s *Server) getModels() ([]string, error) {
-	orderSQL := `ORDER BY model COLLATE NOCASE ASC`
+	var query string
 	if s.isPostgres() {
-		rows, err := s.db.Query(`SELECT DISTINCT model FROM (
+		query = `SELECT DISTINCT model FROM (
 			SELECT model FROM requests WHERE model IS NOT NULL AND TRIM(model) != ''
 			ORDER BY lower(model) ASC
-		) t`)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		items := make([]string, 0, 64)
-		for rows.Next() {
-			var model string
-			if err := rows.Scan(&model); err != nil {
-				return nil, err
-			}
-			model = strings.TrimSpace(model)
-			if model == "" {
-				continue
-			}
-			items = append(items, model)
-		}
-		return items, rows.Err()
-	}
-	rows, err := s.db.Query(`SELECT DISTINCT model
+		) t`
+	} else {
+		query = `SELECT DISTINCT model
 		FROM requests
 		WHERE model IS NOT NULL AND TRIM(model) != ''
-		` + orderSQL)
-	if err != nil {
+		ORDER BY model COLLATE NOCASE ASC`
+	}
+	return scanDistinctStrings(s.db, query, 64)
+}
+
+// scanDistinctStrings 执行单列查询并返回去除空白后的非空字符串列表。
+func scanDistinctStrings(db Database, query string, hint int) ([]string, error) {
+	var raw []string
+	if err := db.Raw(query).Scan(&raw).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	items := make([]string, 0, 64)
-	for rows.Next() {
-		var model string
-		if err := rows.Scan(&model); err != nil {
-			return nil, err
-		}
-		model = strings.TrimSpace(model)
-		if model == "" {
+	items := make([]string, 0, hint)
+	for _, v := range raw {
+		v = strings.TrimSpace(v)
+		if v == "" {
 			continue
 		}
-		items = append(items, model)
+		items = append(items, v)
 	}
-	return items, rows.Err()
+	return items, nil
 }
+
 func (s *Server) getBackends() ([]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT backend_url
+	return scanDistinctStrings(s.db, `SELECT DISTINCT backend_url
 		FROM requests
 		WHERE backend_url IS NOT NULL AND TRIM(backend_url) != ''
-		ORDER BY backend_url ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]string, 0, 16)
-	for rows.Next() {
-		var backend string
-		if err := rows.Scan(&backend); err != nil {
-			return nil, err
-		}
-		backend = strings.TrimSpace(backend)
-		if backend == "" {
-			continue
-		}
-		items = append(items, backend)
-	}
-	return items, rows.Err()
+		ORDER BY backend_url ASC`, 16)
 }
 
 func (s *Server) getStatsByBackend(f RequestFilter) ([]map[string]any, error) {
@@ -547,7 +497,7 @@ func (s *Server) getStatsByBackend(f RequestFilter) ([]map[string]any, error) {
 		GROUP BY backend_url
 		ORDER BY COUNT(*) DESC`
 
-	rows, err := s.db.Query(s.rebind(query), filterTimeArg(from, s.isPostgres()), filterTimeArg(to, s.isPostgres()))
+	rows, err := s.db.Raw(query, filterTimeArg(from, s.isPostgres()), filterTimeArg(to, s.isPostgres())).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -592,8 +542,8 @@ func (s *Server) getBackendMetrics(limit int) ([]map[string]any, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 200
 	}
-	rows, err := s.db.Query(s.rebind(`SELECT created_at, backend_url, metric_name, metric_value
-		FROM backend_metrics ORDER BY created_at DESC, id DESC LIMIT ?`), limit)
+	rows, err := s.db.Raw(`SELECT created_at, backend_url, metric_name, metric_value
+		FROM backend_metrics ORDER BY created_at DESC, id DESC LIMIT ?`, limit).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -638,14 +588,12 @@ func (s *Server) cleanup() {
 	cutoff := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays)
 	cutoffVal := s.createdAtValue(cutoff)
 	if err := retryDBWrite(func() error {
-		_, err := s.db.Exec(s.rebind(`DELETE FROM requests WHERE created_at < ?`), cutoffVal)
-		return err
+		return s.db.Exec(`DELETE FROM requests WHERE created_at < ?`, cutoffVal).Error
 	}); err != nil {
 		log.WithCtx(context.Background()).Infof("cleanup requests failed: %v", err)
 	}
 	if err := retryDBWrite(func() error {
-		_, err := s.db.Exec(s.rebind(`DELETE FROM backend_metrics WHERE created_at < ?`), cutoffVal)
-		return err
+		return s.db.Exec(`DELETE FROM backend_metrics WHERE created_at < ?`, cutoffVal).Error
 	}); err != nil {
 		log.WithCtx(context.Background()).Infof("cleanup backend_metrics failed: %v", err)
 	}
@@ -729,11 +677,7 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, isPostgre
 	}
 	if f.Streaming != nil {
 		query += ` AND is_streaming = ?`
-		if isPostgres {
-			args = append(args, *f.Streaming)
-		} else {
-			args = append(args, boolToInt(*f.Streaming))
-		}
+		args = append(args, *f.Streaming)
 	}
 	if f.ErrorsOnly {
 		query += ` AND (status_code >= 400 OR error_text != '')`
@@ -796,7 +740,7 @@ func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, err
 		GROUP BY ` + dateExpr + `
 		ORDER BY ` + dateExpr + ` ASC`
 
-	rows, err := s.db.Query(s.rebind(query), args...)
+	rows, err := s.db.Raw(query, args...).Rows()
 	if err != nil {
 		return nil, err
 	}

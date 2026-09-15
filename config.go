@@ -64,6 +64,7 @@ type ServerConfig struct {
 	// UIAllowedHosts 允许访问 /_proxy/ui 面板的 Host 列表（忽略端口与大小写）。
 	// 为空则不限制；配置后，Host 不在列表内的请求访问面板将返回 403。
 	UIAllowedHosts []string `yaml:"ui_allowed_hosts"`
+	LogLevel       string   `yaml:"log_level"`
 }
 
 type DatabaseConfig struct {
@@ -226,6 +227,7 @@ func (c *YAMLConfig) toLegacyConfig() Config {
 		RecordPaths:         c.Proxy.RecordPaths,
 		APIKey:              c.Proxy.APIKey,
 		UIAllowedHosts:      c.Server.UIAllowedHosts,
+		LogLevel:            c.Server.LogLevel,
 	}
 }
 

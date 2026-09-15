@@ -22,6 +22,7 @@ type Config struct {
 	RecordPaths         []string
 	APIKey              string   // 客户端访问 proxy 的 API Key，空值则不鉴权
 	UIAllowedHosts      []string // 允许访问 /_proxy/ui 的 Host 白名单，空则不限制
+	LogLevel            string
 }
 
 type Server struct {
@@ -66,9 +67,14 @@ type RequestRecord struct {
 	RequestRawPath     string    `json:"request_raw_path"`
 	ResponseRawPath    string    `json:"response_raw_path"`
 	UserAgent          string    `json:"user_agent"`
-	PromptTokPerSec    float64   `json:"prompt_tok_per_sec"`
-	DecodeTokPerSec    float64   `json:"decode_tok_per_sec"`
-	TotalTokPerSec     float64   `json:"total_tok_per_sec"`
+	PromptTokPerSec    float64   `json:"prompt_tok_per_sec" gorm:"-"`
+	DecodeTokPerSec    float64   `json:"decode_tok_per_sec" gorm:"-"`
+	TotalTokPerSec     float64   `json:"total_tok_per_sec" gorm:"-"`
+}
+
+// TableName 固定 GORM 模型对应的表名（避免默认复数化）。
+func (RequestRecord) TableName() string {
+	return "requests"
 }
 
 type RequestFilter struct {

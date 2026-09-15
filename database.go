@@ -5,69 +5,81 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
+	"github.com/youcd/toolkit/log"
+	gormpostgres "gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-type Database interface {
-	Close() error
-	Ping() error
-	Exec(query string, args ...any) (sql.Result, error)
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
-	Begin() (*sql.Tx, error)
-	GetType() string
-	Rebind(query string) string
+// Database 是 GORM 数据库句柄，全项目统一使用。
+type Database = *gorm.DB
+
+// CloseDatabase 关闭底层连接池（gorm.DB 自身没有 Close 方法）。
+func CloseDatabase(db Database) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
 }
 
-type SQLiteDatabase struct {
-	db *sql.DB
+// isPostgresDB 判断 GORM 句柄底层是否为 PostgreSQL。
+func isPostgresDB(db Database) bool {
+	return db.Dialector.Name() == "postgres"
 }
 
-type PostgreSQLDatabase struct {
-	db *sql.DB
-}
-
-func NewDatabase(cfg DatabaseConfig, dataDir string) (Database, error) {
+func NewDatabase(cfg DatabaseConfig, dataDir, logLevel string) (Database, error) {
 	switch strings.ToLower(cfg.Type) {
 	case "postgresql", "postgres", "pg":
 		return newPostgreSQLDatabase(cfg.PostgreSQL)
 	case "sqlite", "":
-		return newSQLiteDatabase(cfg.SQLite, dataDir)
+		return newSQLiteDatabase(cfg.SQLite, dataDir, logLevel)
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", cfg.Type)
 	}
 }
 
-func newSQLiteDatabase(cfg SQLiteConfig, dataDir string) (*SQLiteDatabase, error) {
+func newSQLiteDatabase(cfg SQLiteConfig, dataDir, logLevel string) (Database, error) {
 	dbPath := cfg.Path
 	if !strings.HasPrefix(dbPath, "/") {
 		dbPath = dataDir + "/" + dbPath
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := "file:" + dbPath +
+		"?_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=busy_timeout(5000)"
+
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: log.NewGormLogger(time.Second, logLevel),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	db.SetMaxOpenConns(16)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(0)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(16)
+	sqlDB.SetMaxIdleConns(4)
+	sqlDB.SetConnMaxLifetime(0)
 
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	return &SQLiteDatabase{db: db}, nil
+	return db, nil
 }
 
-func newPostgreSQLDatabase(cfg PostgreSQLConfig) (*PostgreSQLDatabase, error) {
+func newPostgreSQLDatabase(cfg PostgreSQLConfig) (Database, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("postgresql DSN is required")
 	}
@@ -76,21 +88,27 @@ func newPostgreSQLDatabase(cfg PostgreSQLConfig) (*PostgreSQLDatabase, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("pgx", cfg.DSN)
+	db, err := gorm.Open(gormpostgres.Open(cfg.DSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open postgresql: %w", err)
 	}
 
-	db.SetMaxOpenConns(cfg.MaxOpenConns)
-	db.SetMaxIdleConns(cfg.MaxIdleConns)
-	db.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("open postgresql: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
 
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping postgresql: %w", err)
 	}
 
-	return &PostgreSQLDatabase{db: db}, nil
+	return db, nil
 }
 
 // ensurePostgresDatabase connects to the target database and, if it does not
@@ -279,161 +297,93 @@ func isMissingDatabaseError(err error) bool {
 	return strings.Contains(msg, "does not exist") || strings.Contains(msg, "does not exist.")
 }
 
-func (d *SQLiteDatabase) Close() error {
-	return d.db.Close()
+var sqliteDDLStatements = []string{
+	`CREATE TABLE IF NOT EXISTS requests (
+		id TEXT PRIMARY KEY,
+		created_at DATETIME NOT NULL,
+		method TEXT NOT NULL,
+		path TEXT NOT NULL,
+		query TEXT,
+		client_ip TEXT,
+		backend_url TEXT,
+		model TEXT,
+		is_streaming INTEGER NOT NULL DEFAULT 0,
+		status_code INTEGER NOT NULL DEFAULT 0,
+		error_text TEXT,
+		request_bytes INTEGER NOT NULL DEFAULT 0,
+		response_bytes INTEGER NOT NULL DEFAULT 0,
+		prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_hit_pct REAL NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
+		prompt_ms REAL NOT NULL DEFAULT 0,
+		completion_ms REAL NOT NULL DEFAULT 0,
+		total_ms REAL NOT NULL DEFAULT 0,
+		first_byte_ms REAL NOT NULL DEFAULT 0,
+		chunks_count INTEGER NOT NULL DEFAULT 0,
+		request_raw_path TEXT,
+		response_raw_path TEXT,
+		user_agent TEXT
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);`,
+	`CREATE INDEX IF NOT EXISTS idx_requests_path ON requests(path);`,
+	`CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);`,
+	`CREATE TABLE IF NOT EXISTS backend_metrics (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at DATETIME NOT NULL,
+		backend_url TEXT NOT NULL,
+		metric_name TEXT NOT NULL,
+		metric_value REAL NOT NULL
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_backend_metrics_created_at ON backend_metrics(created_at DESC);`,
 }
 
-func (d *SQLiteDatabase) Ping() error {
-	return d.db.Ping()
-}
-
-func (d *SQLiteDatabase) Exec(query string, args ...any) (sql.Result, error) {
-	return d.db.Exec(query, args...)
-}
-
-func (d *SQLiteDatabase) Query(query string, args ...any) (*sql.Rows, error) {
-	return d.db.Query(query, args...)
-}
-
-func (d *SQLiteDatabase) QueryRow(query string, args ...any) *sql.Row {
-	return d.db.QueryRow(query, args...)
-}
-
-func (d *SQLiteDatabase) Begin() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-func (d *SQLiteDatabase) GetType() string {
-	return "sqlite"
-}
-
-func (d *SQLiteDatabase) Rebind(query string) string {
-	return query
-}
-
-// rebindPostgres converts ? placeholders to $1, $2, ... style used by PostgreSQL.
-func rebindPostgres(query string) string {
-	var b strings.Builder
-	n := 0
-	inQuote := false
-	var quoteChar byte
-	for i := 0; i < len(query); i++ {
-		c := query[i]
-		switch {
-		case inQuote:
-			b.WriteByte(c)
-			if c == quoteChar {
-				// handle doubled quotes ('' or "")
-				if i+1 < len(query) && query[i+1] == quoteChar {
-					b.WriteByte(query[i+1])
-					i++
-				} else {
-					inQuote = false
-				}
-			}
-		case c == '\'' || c == '"':
-			inQuote = true
-			quoteChar = c
-			b.WriteByte(c)
-		case c == '?':
-			n++
-			b.WriteByte('$')
-			b.WriteString(strconv.Itoa(n))
-		case c == '-' && i+1 < len(query) && query[i+1] == '-':
-			// line comment
-			for i < len(query) && query[i] != '\n' {
-				b.WriteByte(query[i])
-				i++
-			}
-			if i < len(query) {
-				b.WriteByte(query[i])
-			}
-		default:
-			b.WriteByte(c)
-		}
-	}
-	return b.String()
-}
-
-func (d *PostgreSQLDatabase) Close() error {
-	return d.db.Close()
-}
-
-func (d *PostgreSQLDatabase) Ping() error {
-	return d.db.Ping()
-}
-
-func (d *PostgreSQLDatabase) Exec(query string, args ...any) (sql.Result, error) {
-	return d.db.Exec(query, args...)
-}
-
-func (d *PostgreSQLDatabase) Query(query string, args ...any) (*sql.Rows, error) {
-	return d.db.Query(query, args...)
-}
-
-func (d *PostgreSQLDatabase) QueryRow(query string, args ...any) *sql.Row {
-	return d.db.QueryRow(query, args...)
-}
-
-func (d *PostgreSQLDatabase) Begin() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-func (d *PostgreSQLDatabase) GetType() string {
-	return "postgresql"
-}
-
-func (d *PostgreSQLDatabase) Rebind(query string) string {
-	return rebindPostgres(query)
+var pgDDLStatements = []string{
+	`CREATE TABLE IF NOT EXISTS requests (
+		id TEXT PRIMARY KEY,
+		created_at TIMESTAMPTZ NOT NULL,
+		method TEXT NOT NULL,
+		path TEXT NOT NULL,
+		query TEXT,
+		client_ip TEXT,
+		backend_url TEXT,
+		model TEXT,
+		is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
+		status_code INTEGER NOT NULL DEFAULT 0,
+		error_text TEXT,
+		request_bytes BIGINT NOT NULL DEFAULT 0,
+		response_bytes BIGINT NOT NULL DEFAULT 0,
+		prompt_tokens BIGINT NOT NULL DEFAULT 0,
+		cached_prompt_tokens BIGINT NOT NULL DEFAULT 0,
+		cache_hit_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+		completion_tokens BIGINT NOT NULL DEFAULT 0,
+		total_tokens BIGINT NOT NULL DEFAULT 0,
+		prompt_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+		completion_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+		total_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+		first_byte_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+		chunks_count BIGINT NOT NULL DEFAULT 0,
+		request_raw_path TEXT,
+		response_raw_path TEXT,
+		user_agent TEXT
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);`,
+	`CREATE INDEX IF NOT EXISTS idx_requests_path ON requests(path);`,
+	`CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);`,
+	`CREATE TABLE IF NOT EXISTS backend_metrics (
+		id SERIAL PRIMARY KEY,
+		created_at TIMESTAMPTZ NOT NULL,
+		backend_url TEXT NOT NULL,
+		metric_name TEXT NOT NULL,
+		metric_value DOUBLE PRECISION NOT NULL
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_backend_metrics_created_at ON backend_metrics(created_at DESC);`,
 }
 
 func initSQLiteDB(db Database) error {
-	stmts := []string{
-		`PRAGMA journal_mode = WAL;`,
-		`PRAGMA synchronous = NORMAL;`,
-		`PRAGMA busy_timeout = 5000;`,
-		`CREATE TABLE IF NOT EXISTS requests (
-			id TEXT PRIMARY KEY,
-			created_at DATETIME NOT NULL,
-			method TEXT NOT NULL,
-			path TEXT NOT NULL,
-			query TEXT,
-			client_ip TEXT,
-			backend_url TEXT,
-			model TEXT,
-			is_streaming INTEGER NOT NULL DEFAULT 0,
-			status_code INTEGER NOT NULL DEFAULT 0,
-			error_text TEXT,
-			request_bytes INTEGER NOT NULL DEFAULT 0,
-			response_bytes INTEGER NOT NULL DEFAULT 0,
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			cache_hit_pct REAL NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			total_tokens INTEGER NOT NULL DEFAULT 0,
-			prompt_ms REAL NOT NULL DEFAULT 0,
-			completion_ms REAL NOT NULL DEFAULT 0,
-			total_ms REAL NOT NULL DEFAULT 0,
-			first_byte_ms REAL NOT NULL DEFAULT 0,
-			chunks_count INTEGER NOT NULL DEFAULT 0,
-			request_raw_path TEXT,
-			response_raw_path TEXT,
-			user_agent TEXT
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_path ON requests(path);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);`,
-		`CREATE TABLE IF NOT EXISTS backend_metrics (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at DATETIME NOT NULL,
-			backend_url TEXT NOT NULL,
-			metric_name TEXT NOT NULL,
-			metric_value REAL NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_backend_metrics_created_at ON backend_metrics(created_at DESC);`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	for _, stmt := range sqliteDDLStatements {
+		if err := db.Exec(stmt).Error; err != nil {
 			return err
 		}
 	}
@@ -441,49 +391,8 @@ func initSQLiteDB(db Database) error {
 }
 
 func initPostgreSQLDB(db Database) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS requests (
-			id TEXT PRIMARY KEY,
-			created_at TIMESTAMPTZ NOT NULL,
-			method TEXT NOT NULL,
-			path TEXT NOT NULL,
-			query TEXT,
-			client_ip TEXT,
-			backend_url TEXT,
-			model TEXT,
-			is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
-			status_code INTEGER NOT NULL DEFAULT 0,
-			error_text TEXT,
-			request_bytes BIGINT NOT NULL DEFAULT 0,
-			response_bytes BIGINT NOT NULL DEFAULT 0,
-			prompt_tokens BIGINT NOT NULL DEFAULT 0,
-			cached_prompt_tokens BIGINT NOT NULL DEFAULT 0,
-			cache_hit_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
-			completion_tokens BIGINT NOT NULL DEFAULT 0,
-			total_tokens BIGINT NOT NULL DEFAULT 0,
-			prompt_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
-			completion_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
-			total_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
-			first_byte_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
-			chunks_count BIGINT NOT NULL DEFAULT 0,
-			request_raw_path TEXT,
-			response_raw_path TEXT,
-			user_agent TEXT
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at DESC);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_path ON requests(path);`,
-		`CREATE INDEX IF NOT EXISTS idx_requests_status_code ON requests(status_code);`,
-		`CREATE TABLE IF NOT EXISTS backend_metrics (
-			id SERIAL PRIMARY KEY,
-			created_at TIMESTAMPTZ NOT NULL,
-			backend_url TEXT NOT NULL,
-			metric_name TEXT NOT NULL,
-			metric_value DOUBLE PRECISION NOT NULL
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_backend_metrics_created_at ON backend_metrics(created_at DESC);`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	for _, stmt := range pgDDLStatements {
+		if err := db.Exec(stmt).Error; err != nil {
 			return err
 		}
 	}

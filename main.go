@@ -31,7 +31,7 @@ func main() {
 	}
 
 	cfg := yamlCfg.toLegacyConfig()
-
+	log.SetLogLevel(cfg.LogLevel)
 	if len(yamlCfg.getEnabledBackends()) == 0 && !yamlCfg.Backends.AllowDynamic {
 		log.WithCtx(nil).Fatal("no enabled backend in backends.list and dynamic backend override is disabled")
 	}
@@ -39,11 +39,11 @@ func main() {
 		log.WithCtx(nil).Fatalf("mkdir data dir: %v", err)
 	}
 
-	db, err := NewDatabase(yamlCfg.Database, cfg.DataDir)
+	db, err := NewDatabase(yamlCfg.Database, cfg.DataDir, cfg.LogLevel)
 	if err != nil {
 		log.WithCtx(nil).Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer CloseDatabase(db)
 
 	dbType := yamlCfg.Database.Type
 	if err := InitDB(db, dbType); err != nil {

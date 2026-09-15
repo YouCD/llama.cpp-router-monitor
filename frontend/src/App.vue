@@ -79,14 +79,15 @@ import {
   fetchStats, fetchRequests, fetchRequest, fetchModels, fetchBackends,
   fetchStatsByBackend, fetchDailyStats, fetchScheduler,
 } from './api'
-import { fmtDate, statusBucket } from './utils'
+import { fmtDate, statusBucket, todayRange } from './utils'
 
 const pageSize = 100
 const locale = computed(() => elementLocale())
 
+const [dayStart, dayEnd] = todayRange()
 const filters = reactive({
-  time_from: new Date(Date.now() - 3600e3).toISOString(),
-  time_to: new Date().toISOString(),
+  time_from: dayStart.toISOString(),
+  time_to: dayEnd.toISOString(),
 })
 const stats = reactive({})
 const llmStats = reactive({})

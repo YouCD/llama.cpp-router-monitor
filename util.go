@@ -15,10 +15,6 @@ import (
 	"time"
 )
 
-func (s *Server) rebind(q string) string {
-	return s.db.Rebind(q)
-}
-
 // newInflightCtx 返回一个带 request_id 的请求上下文，供 log.WithCtx 提取，
 // 以便一个请求从接收到结束的所有日志能按 request_id 串联。
 func (s *Server) newInflightCtx(parent context.Context, requestID string) context.Context {
@@ -58,7 +54,7 @@ func (s *Server) cancelAllSSE() {
 }
 
 func (s *Server) isPostgres() bool {
-	return s.db.GetType() == "postgresql"
+	return isPostgresDB(s.db)
 }
 
 // pushSchedEvent 记录并广播一次调度相关事件（coding 请求、进程切换等）。
@@ -76,13 +72,6 @@ func (s *Server) pushSchedEvent(kind string, extra map[string]any) {
 	s.hub.Broadcast(ev)
 }
 
-func (s *Server) streamValue(v bool) any {
-	if s.isPostgres() {
-		return v
-	}
-	return boolToInt(v)
-}
-
 func (s *Server) createdAtValue(t time.Time) any {
 	if s.isPostgres() {
 		return t.UTC()
@@ -90,22 +79,6 @@ func (s *Server) createdAtValue(t time.Time) any {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-func (s *Server) isStreamingValue(v any) bool {
-	switch x := v.(type) {
-	case bool:
-		return x
-	case int64:
-		return x != 0
-	case int:
-		return x != 0
-	case []byte:
-		return len(x) > 0 && x[0] == '1'
-	case string:
-		return x == "1" || x == "true" || x == "t"
-	default:
-		return false
-	}
-}
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -218,12 +191,6 @@ func toFloat64(v any) float64 {
 	}
 }
 
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
 func getQueryInt(r *http.Request, name string, fallback int) int {
 	v := strings.TrimSpace(r.URL.Query().Get(name))
 	if v == "" {

@@ -103,6 +103,14 @@ export function fmtDateTime(value) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+export function todayRange() {
+  const now = new Date()
+  return [
+    new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0),
+    new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999),
+  ]
+}
+
 export function fmtWindowLabel(from, to) {
   const f = new Date(from)
   const t = new Date(to)
