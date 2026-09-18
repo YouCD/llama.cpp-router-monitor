@@ -320,7 +320,7 @@ X-Backend-URL: http://host.docker.internal:8081
 - **按后端统计**：每个后端的请求量、平均 TTFT、TOKEN/S、错误率
 - **每日统计图**：每日 Token 用量（prompt/completion/total）、每日请求状态分布（200/4xx/5xx）、每日请求总数
 - **请求列表**：时间、路径、客户端（IP）、User-Agent、提供商、状态、模型、耗时（TTFT/总计）、Token（提示/补全）、缓存命中率、prompt/s；支持分页加载
-- **筛选**：状态码、时间范围（`time_from`/`time_to`）、路径、模型、后端、方法、流式/非流式、仅失败、有 Token、仅对话补全
+- **筛选**：状态码、时间范围（`time_from`/`time_to`）、路径、模型、后端、方法、客户端 IP、User-Agent（`user_agent` 子串匹配）、流式/非流式、仅失败、有 Token、仅对话补全
 - **请求详情**：查看原始请求/响应载荷（raw）、删除记录
 
 ## API 端点

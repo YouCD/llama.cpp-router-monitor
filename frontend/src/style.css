@@ -460,8 +460,12 @@ body {
 .filter-tools {
   margin-left: auto;
   display: flex;
-  gap: 12px;
+  gap: 2px;
   align-items: center;
+}
+/* 压缩文本按钮默认 15px 侧边距，右侧三个工具视觉间距更紧 */
+.filter-tools .el-button {
+  padding: 5px 8px;
 }
 .filter-bar .el-select,
 .filter-bar .el-input {
@@ -562,7 +566,7 @@ body {
   color: var(--app-cyan);
 }
 
-/* User-Agent 单元格：截断显示，hover 看全文（不可点击，无筛选联动） */
+/* User-Agent 单元格：截断显示，hover 看全文；点击按该 UA 筛选 */
 .ua-cell {
   display: inline-block;
   max-width: 100%;
@@ -570,7 +574,11 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+  cursor: pointer;
   color: var(--app-muted);
+}
+.ua-cell:hover {
+  color: var(--app-cyan);
 }
 
 .model-cell {

@@ -288,6 +288,7 @@ func parseRequestFilter(r *http.Request) model.RequestFilter {
 		Method:              strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("method"))),
 		Backend:             strings.TrimSpace(r.URL.Query().Get("backend")),
 		ClientIP:            strings.TrimSpace(r.URL.Query().Get("client_ip")),
+		UserAgent:           strings.TrimSpace(r.URL.Query().Get("user_agent")),
 		Search:              strings.TrimSpace(r.URL.Query().Get("q")),
 		StatusCode:          httpx.QueryInt(r, "status", 0),
 		ErrorsOnly:          httpx.QueryBool(r, "errors_only", false),

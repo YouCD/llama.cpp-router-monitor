@@ -665,6 +665,10 @@ func appendRequestFilterSQL(query string, args []any, f model.RequestFilter, isP
 		query += ` AND client_ip LIKE ?`
 		args = append(args, "%"+f.ClientIP+"%")
 	}
+	if f.UserAgent != "" {
+		query += ` AND user_agent LIKE ?`
+		args = append(args, "%"+f.UserAgent+"%")
+	}
 	if f.StatusCode > 0 {
 		query += ` AND status_code = ?`
 		args = append(args, f.StatusCode)

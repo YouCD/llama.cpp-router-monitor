@@ -62,6 +62,7 @@
           @select="openDetails"
           @select-backend="onBackendSelect"
           @select-client-ip="onClientIPSelect"
+          @select-user-agent="onUserAgentSelect"
       />
 
       <RequestDrawer
@@ -268,6 +269,15 @@ function onClientIPSelect(ip) {
     filterPanel.value.setClientIP(ip)
   }
   filters.client_ip = ip
+  refreshAll().catch(() => {
+  })
+}
+
+function onUserAgentSelect(ua) {
+  if (filterPanel.value) {
+    filterPanel.value.setUserAgent(ua)
+  }
+  filters.user_agent = ua
   refreshAll().catch(() => {
   })
 }

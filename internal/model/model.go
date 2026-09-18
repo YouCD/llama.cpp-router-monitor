@@ -46,6 +46,7 @@ type RequestFilter struct {
 	Method              string
 	Backend             string
 	ClientIP            string
+	UserAgent           string
 	Search              string
 	StatusCode          int
 	TimeFrom            time.Time // 开始时间（含），零值表示不限

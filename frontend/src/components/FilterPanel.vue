@@ -57,12 +57,13 @@
     </div>
 
     <div v-show="showAdv" class="filter-bar adv-panel">
-      <el-input :model-value="f.path" :placeholder="t('filterPath')" clearable @update:model-value="v => (f.path = v)" @keyup.enter="apply" />
-      <el-input :model-value="f.client_ip" :placeholder="t('filterClient')" clearable @update:model-value="v => (f.client_ip = v)" @keyup.enter="apply" style="width: 150px" />
-      <el-select :model-value="f.method" :placeholder="t('filterMethod')" clearable @update:model-value="v => (f.method = v)" style="width: 130px">
+      <el-input :model-value="f.path" :placeholder="t('filterPath')" clearable @update:model-value="v => (f.path = v)" @keyup.enter="apply" style="width: 180px" />
+      <el-input :model-value="f.client_ip" :placeholder="t('filterClient')" clearable @update:model-value="v => (f.client_ip = v)" @keyup.enter="apply" style="width: 140px" />
+      <el-input :model-value="f.user_agent" :placeholder="t('filterUserAgent')" clearable @update:model-value="v => (f.user_agent = v)" @keyup.enter="apply" style="width: 170px" />
+      <el-select :model-value="f.method" :placeholder="t('filterMethod')" clearable @update:model-value="v => (f.method = v)" style="width: 110px">
         <el-option v-for="m in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']" :key="m" :label="m" :value="m" />
       </el-select>
-      <el-select :model-value="f.stream" :placeholder="t('filterStream')" clearable @update:model-value="v => (f.stream = v)" style="width: 150px">
+      <el-select :model-value="f.stream" :placeholder="t('filterStream')" clearable @update:model-value="v => (f.stream = v)" style="width: 110px">
         <el-option :label="t('streaming')" value="true" />
         <el-option :label="t('nonStreaming')" value="false" />
       </el-select>
@@ -91,6 +92,7 @@ const emit = defineEmits(['apply'])
 const f = reactive({
   path: '',
   client_ip: '',
+  user_agent: '',
   model: '',
   backend: '',
   method: '',
@@ -128,6 +130,7 @@ function collect() {
   const filters = {}
   if (f.path) filters.path = f.path.trim()
   if (f.client_ip) filters.client_ip = f.client_ip.trim()
+  if (f.user_agent) filters.user_agent = f.user_agent.trim()
   if (f.model) filters.model = f.model
   if (f.backend) filters.backend = f.backend
   if (f.method) filters.method = f.method
@@ -150,6 +153,7 @@ function apply() {
 function clearFilters() {
   f.path = ''
   f.client_ip = ''
+  f.user_agent = ''
   f.model = ''
   f.backend = ''
   f.method = ''
@@ -217,7 +221,13 @@ function setClientIP(ip) {
   f.client_ip = ip
 }
 
-defineExpose({ collect, setBackend, setClientIP })
+function setUserAgent(ua) {
+  if (debounceTimer) clearTimeout(debounceTimer)
+  suppressWatch = true
+  f.user_agent = ua
+}
+
+defineExpose({ collect, setBackend, setClientIP, setUserAgent })
 
 onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer)

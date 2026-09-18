@@ -35,7 +35,12 @@
       </el-table-column>
       <el-table-column :label="t('colUserAgent')" min-width="150">
         <template #default="{ row }">
-          <span v-if="row.user_agent" class="mono ua-cell" :title="row.user_agent">{{ row.user_agent }}</span>
+          <span
+            v-if="row.user_agent"
+            class="mono ua-cell"
+            :title="row.user_agent + ' · ' + t('clickToFilter')"
+            @click.stop="onUserAgentClick(row)"
+          >{{ row.user_agent }}</span>
           <span v-else class="cell-subtle">-</span>
         </template>
       </el-table-column>
@@ -70,7 +75,7 @@
           <span :class="latencyTone(row.first_byte_ms)">{{ fmtLatency(row.first_byte_ms, row.total_ms, t('live')) }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colTokens')" min-width="150" align="right">
+      <el-table-column :label="t('colTokens')" min-width="120" align="right">
         <template #default="{ row }">
           <div class="mono">{{ fmtTokens(row.prompt_tokens, row.completion_tokens) }}</div>
         </template>
@@ -132,7 +137,7 @@ const props = defineProps({
   loadingMore: { type: Boolean, default: false },
   pageSize: { type: Number, default: 100 },
 })
-const emit = defineEmits(['loadMore', 'select', 'select-backend', 'select-client-ip'])
+const emit = defineEmits(['loadMore', 'select', 'select-backend', 'select-client-ip', 'select-user-agent'])
 
 const BREAK_MS = 30 * 60 * 1000
 
@@ -187,6 +192,9 @@ function onBackendClick(row) {
 }
 function onClientIPClick(row) {
   if (row.client_ip) emit('select-client-ip', row.client_ip)
+}
+function onUserAgentClick(row) {
+  if (row.user_agent) emit('select-user-agent', row.user_agent)
 }
 async function onCopy(row) {
   const q = row.query ? `?${row.query}` : ''

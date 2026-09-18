@@ -722,3 +722,37 @@ func TestGetRequestsBackendFilter(t *testing.T) {
 		t.Fatalf("backend=%q", recs[0].BackendURL)
 	}
 }
+
+func TestGetRequestsUserAgentFilter(t *testing.T) {
+	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	defer cleanup()
+
+	now := time.Now().UTC()
+	for _, rec := range []model.RequestRecord{
+		{ID: "ua-1", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", UserAgent: "GoClaw/2.1 (linux)", StatusCode: http.StatusOK},
+		{ID: "ua-2", CreatedAt: now.Add(time.Second), Method: http.MethodPost, Path: "/v1/chat/completions", UserAgent: "curl/8.5.0", StatusCode: http.StatusOK},
+		{ID: "ua-3", CreatedAt: now.Add(2 * time.Second), Method: http.MethodPost, Path: "/v1/chat/completions", UserAgent: "", StatusCode: http.StatusOK},
+	} {
+		if err := seedRequest(t, svc, rec); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// 完整 UA 精确命中
+	recs, err := svc.store.GetRequests(100, 0, model.RequestFilter{UserAgent: "GoClaw/2.1 (linux)"})
+	if err != nil {
+		t.Fatalf("getRequests: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "ua-1" {
+		t.Fatalf("expected only ua-1, got %+v", recs)
+	}
+
+	// 子串匹配：GoClaw 前缀命中，curl 与空 UA 不命中
+	recs, err = svc.store.GetRequests(100, 0, model.RequestFilter{UserAgent: "GoClaw"})
+	if err != nil {
+		t.Fatalf("getRequests: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "ua-1" {
+		t.Fatalf("expected only ua-1 for substring, got %+v", recs)
+	}
+}
