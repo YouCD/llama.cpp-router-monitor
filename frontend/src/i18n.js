@@ -13,6 +13,7 @@ const messages = {
     lastUpdate: '最后更新',
     refresh: '刷新',
     autoRefresh: '自动刷新',
+    themeToggle: '切换主题（深/浅）',
     // 指标卡片
     metricActive: '活跃连接',
     metricInFlight: '进行中',
@@ -187,6 +188,7 @@ const messages = {
     lastUpdate: 'Last update',
     refresh: 'Refresh',
     autoRefresh: 'Auto refresh',
+    themeToggle: 'Toggle theme (dark/light)',
     metricActive: 'Active connections',
     metricInFlight: 'In flight',
     metricReqHour: 'Requests / hour',

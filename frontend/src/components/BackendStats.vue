@@ -5,16 +5,22 @@
       <div class="backend-bar" v-for="b in bars" :key="b.url" @click="$emit('select', b.url)">
         <span class="backend-dot" :class="b.dot" :title="b.dotTitle"></span>
         <div class="backend-id">
-          <span class="backend-name" :title="b.url">{{ b.name }}</span>
-          <div class="backend-meta" v-if="b.model || b.tags.length">
-            <span class="backend-model" v-if="b.model" :title="b.model">{{ b.model }}</span>
-            <span class="backend-tag" v-for="tag in b.tags" :key="tag" :title="'路由池: ' + tag">{{ tag }}</span>
+          <div class="backend-line">
+            <span class="backend-name" :title="b.url">{{ b.name }}</span>
+            <span
+              v-for="tag in b.tags"
+              :key="tag"
+              class="backend-tag"
+              :title="'路由池: ' + tag"
+            >{{ tag }}</span>
           </div>
+          <div class="backend-model" v-if="b.model" :title="b.model">{{ b.model }}</div>
         </div>
 
         <div class="backend-load">
           <div class="load-track">
-            <div class="load-fill" :class="b.loadTone" :style="{ width: b.loadPct + '%' }"></div>
+            <!-- 成功率细条：长度 = 100% − 错误率；颜色 = 错误率分级（蓝/琥珀/红） -->
+            <div class="load-fill" :class="'fill-' + b.barTone" :style="{ width: b.successPct + '%' }"></div>
           </div>
         </div>
 
@@ -38,7 +44,7 @@
 import { computed } from 'vue'
 import { t } from '../i18n'
 import {
-  fmtNum, fmtCompact, fmtPercent, fmtDuration,
+  fmtNum, fmtCompact, fmtPercent, fmtDuration, errRateTone,
   shortenBackendUrl as shorten,
 } from '../utils'
 
@@ -50,7 +56,6 @@ defineEmits(['select'])
 
 const bars = computed(() => {
   const list = props.items || []
-  const maxReqs = Math.max(1, ...list.map((b) => b.requests || 0))
   const secs = props.windowSec || 1
   return list.map((b) => {
     const requests = b.requests || 0
@@ -58,17 +63,15 @@ const bars = computed(() => {
     // 用 completion_tokens（输出 token）计算，与“生成速度”口径一致；
     // total_tokens 里 prompt 占大头（可达 98%），会把数值虚高成 prompt 处理速率
     const tps = secs > 0 ? (b.completion_tokens || 0) / secs : 0
-    const pct = Math.max(4, Math.round((requests / maxReqs) * 100))
-    const dot = errorRate > 0 ? 'dot-warn' : 'dot-ok'
+    // 成功率细条：100% − 错误率（不再用请求数比例，降低大面积色块噪声）
+    const successPct = Math.max(0, Math.round((1 - errorRate) * 10000) / 100)
+    // 状态分级：<1% 正常 / 1–5% 警告 / >5% 异常，与错误率文字颜色同一套语义
+    const barTone = errorRate < 0.01 ? 'ok' : errorRate <= 0.05 ? 'warn' : 'bad'
+    const dot = errorRate < 0.01 ? 'dot-ok' : errorRate <= 0.05 ? 'dot-warn' : 'dot-bad'
     const dotTitle = errorRate > 0
       ? t('backendErrTip', { n: fmtPercent(errorRate) })
       : t('backendHealthy')
-    const errTone = errorRate > 0 ? 'tone-warm' : 'tone-good'
-    let loadTone = 'fill-low'
-    if (list.length > 1) {
-      if (pct > 80) loadTone = 'fill-high'
-      else if (pct > 50) loadTone = 'fill-mid'
-    }
+    const errTone = errRateTone(errorRate)
     return {
       url: b.backend_url,
       name: shorten(b.backend_url),
@@ -82,8 +85,8 @@ const bars = computed(() => {
       dot,
       dotTitle,
       errTone,
-      loadTone,
-      loadPct: pct,
+      barTone,
+      successPct,
     }
   })
 })

@@ -3,7 +3,7 @@
     <div class="app-shell">
       <header class="app-header">
         <div class="header-left">
-          <img class="header-logo" src="/favicon.svg" alt="logo" />
+          <img class="header-logo" src="/favicon.svg" alt="logo"/>
           <div>
             <h1 class="title">{{ t('appTitle') }}</h1>
             <p class="subtitle">{{ t('heroText') }}</p>
@@ -14,10 +14,13 @@
           <span>{{ liveText }}</span>
           <span class="cell-subtle">{{ t('lastUpdate') }} {{ lastUpdated }}</span>
           <span style="display: inline-flex; align-items: center; gap: 6px">
-            <el-switch v-model="autoRefresh" />
+            <el-switch v-model="autoRefresh"/>
             <span class="cell-subtle">{{ t('autoRefresh') }}</span>
           </span>
           <el-button :icon="Refresh" @click="refreshNow" round>{{ t('refresh') }}</el-button>
+          <span class="lang-btn" :title="t('themeToggle')" @click="toggleTheme">
+            <span class="lang-icon">{{ currentTheme === 'dark' ? '☀️' : '🌙' }}</span>
+          </span>
           <el-dropdown trigger="hover" @command="onLangCommand">
             <span class="lang-btn">
               <span class="lang-icon">🌐</span>
@@ -33,42 +36,46 @@
         </div>
       </header>
 
-      <StatsCards :stats="stats" :llm-stats="llmStats" :has-filters="hasFilters" :output-sec="outputSec" :window-label="timeWindow.label" />
+      <StatsCards :stats="stats" :llm-stats="llmStats" :has-filters="hasFilters" :output-sec="outputSec"
+                  :window-label="timeWindow.label"/>
 
-      <SchedulerStatus :data="scheduler" />
+      <SchedulerStatus :data="scheduler"/>
 
-      <BackendStats :items="backendStats" :window-sec="timeWindow.secs" @select="onBackendSelect" />
+      <BackendStats :items="backendStats" :window-sec="timeWindow.secs" @select="onBackendSelect"/>
 
-      <section class="daily-section">
-        <h2 class="daily-heading">{{ t('dailyTitle') }}</h2>
-        <DailyChart :items="dailyStats" />
-      </section>
+      <div class="panel">
+        <section class="daily-section">
+          <h2 class="daily-heading">{{ t('dailyTitle') }}</h2>
+          <DailyChart :items="dailyStats"/>
+        </section>
+      </div>
 
-      <FilterPanel ref="filterPanel" :models="models" :backends="backends" :quick-counts="quickCounts" @apply="onApply" />
+      <FilterPanel ref="filterPanel" :models="models" :backends="backends" :quick-counts="quickCounts"
+                   @apply="onApply"/>
 
       <RequestTable
-        :items="items"
-        :has-more="hasMore"
-        :loading-more="loadingMore"
-        :page-size="pageSize"
-        @load-more="loadMore"
-        @select="openDetails"
-        @select-backend="onBackendSelect"
-        @select-client-ip="onClientIPSelect"
+          :items="items"
+          :has-more="hasMore"
+          :loading-more="loadingMore"
+          :page-size="pageSize"
+          @load-more="loadMore"
+          @select="openDetails"
+          @select-backend="onBackendSelect"
+          @select-client-ip="onClientIPSelect"
       />
 
       <RequestDrawer
-        v-model:visible="drawerVisible"
-        :request="selectedRequest"
-        @deleted="onDeleted"
+          v-model:visible="drawerVisible"
+          :request="selectedRequest"
+          @deleted="onDeleted"
       />
     </div>
   </el-config-provider>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import {computed, onMounted, onUnmounted, reactive, ref} from 'vue'
+import {Refresh} from '@element-plus/icons-vue'
 import StatsCards from './components/StatsCards.vue'
 import SchedulerStatus from './components/SchedulerStatus.vue'
 import BackendStats from './components/BackendStats.vue'
@@ -76,12 +83,19 @@ import DailyChart from './components/DailyChart.vue'
 import FilterPanel from './components/FilterPanel.vue'
 import RequestTable from './components/RequestTable.vue'
 import RequestDrawer from './components/RequestDrawer.vue'
-import { currentLang, elementLocale, t, setLang } from './i18n'
+import {currentLang, elementLocale, setLang, t} from './i18n'
+import {currentTheme, toggleTheme} from './theme'
 import {
-  fetchStats, fetchRequests, fetchRequest, fetchModels, fetchBackends,
-  fetchStatsByBackend, fetchDailyStats, fetchScheduler,
+  fetchBackends,
+  fetchDailyStats,
+  fetchModels,
+  fetchRequest,
+  fetchRequests,
+  fetchScheduler,
+  fetchStats,
+  fetchStatsByBackend,
 } from './api'
-import { fmtDate, statusBucket, todayRange } from './utils'
+import {fmtDate, statusBucket, todayRange} from './utils'
 
 const pageSize = 100
 const locale = computed(() => elementLocale())
@@ -113,10 +127,10 @@ const filterPanel = ref(null)
 const hasFilters = computed(() => Object.keys(filters).length > 0)
 
 // 总览/提供商/每日趋势使用固定的默认窗口，不受时间筛选影响（时间筛选只作用于请求列表）
-const timeWindow = computed(() => ({ secs: 3600, label: t('filterLast1h') }))
+const timeWindow = computed(() => ({secs: 3600, label: t('filterLast1h')}))
 
 const quickCounts = computed(() => {
-  const c = { ok: 0, err4xx: 0, err5xx: 0, stream: 0 }
+  const c = {ok: 0, err4xx: 0, err5xx: 0, stream: 0}
   for (const it of items.value) {
     const b = statusBucket(it.status_code || 0)
     if (b === 'ok') c.ok++
@@ -143,7 +157,7 @@ function setFilters(f) {
 
 // 总览类面板使用的筛选条件：去掉时间范围（时间范围只影响请求列表）
 function overviewFilters() {
-  const { time_from, time_to, ...rest } = filters
+  const {time_from, time_to, ...rest} = filters
   return rest
 }
 
@@ -152,7 +166,7 @@ async function loadStats() {
     const base = overviewFilters()
     const [data, llm] = await Promise.all([
       fetchStats(base),
-      fetchStats({ ...base, chat_completions_only: 'true' }),
+      fetchStats({...base, chat_completions_only: 'true'}),
     ])
     Object.keys(stats).forEach((k) => delete stats[k])
     Object.assign(stats, data)
@@ -160,7 +174,7 @@ async function loadStats() {
     Object.assign(llmStats, llm)
     lastUpdated.value = fmtDate(new Date().toISOString())
   } catch (err) {
-    setLive('error', t('refreshFailed', { msg: err.message }))
+    setLive('error', t('refreshFailed', {msg: err.message}))
   }
 }
 
@@ -168,15 +182,15 @@ async function loadRequests() {
   loadingMore.value = false
   try {
     // 首页刷新恒用 pageSize：不能用 items.value.length（筛选后行数变少会限制取数上限）
-    const data = await fetchRequests(pageSize, 0, { ...filters })
+    const data = await fetchRequests(pageSize, 0, {...filters})
     items.value = data.items || []
     hasMore.value = (data.items || []).length >= pageSize
     const rates = items.value
-      .map((it) => Number(it.decode_tok_per_sec || 0))
-      .filter((v) => Number.isFinite(v) && v > 0)
+        .map((it) => Number(it.decode_tok_per_sec || 0))
+        .filter((v) => Number.isFinite(v) && v > 0)
     outputSec.value = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : 0
   } catch (err) {
-    setLive('error', t('refreshFailed', { msg: err.message }))
+    setLive('error', t('refreshFailed', {msg: err.message}))
   }
 }
 
@@ -184,11 +198,11 @@ async function loadMore() {
   if (loadingMore.value || !hasMore.value) return
   loadingMore.value = true
   try {
-    const data = await fetchRequests(pageSize, items.value.length, { ...filters })
+    const data = await fetchRequests(pageSize, items.value.length, {...filters})
     items.value = items.value.concat(data.items || [])
     hasMore.value = (data.items || []).length >= pageSize
   } catch (err) {
-    ElMessage.error(t('loadMoreFailed', { msg: err.message }))
+    ElMessage.error(t('loadMoreFailed', {msg: err.message}))
   } finally {
     loadingMore.value = false
   }
@@ -222,10 +236,12 @@ async function loadScheduler() {
 async function loadOptions() {
   try {
     models.value = await fetchModels()
-  } catch { /* ignore */ }
+  } catch { /* ignore */
+  }
   try {
     backends.value = await fetchBackends()
-  } catch { /* ignore */ }
+  } catch { /* ignore */
+  }
 }
 
 async function refreshAll() {
@@ -234,7 +250,8 @@ async function refreshAll() {
 
 function onApply(f) {
   setFilters(f)
-  refreshAll().catch(() => {})
+  refreshAll().catch(() => {
+  })
 }
 
 function onBackendSelect(url) {
@@ -242,7 +259,8 @@ function onBackendSelect(url) {
     filterPanel.value.setBackend(url)
   }
   filters.backend = url
-  refreshAll().catch(() => {})
+  refreshAll().catch(() => {
+  })
 }
 
 function onClientIPSelect(ip) {
@@ -250,7 +268,8 @@ function onClientIPSelect(ip) {
     filterPanel.value.setClientIP(ip)
   }
   filters.client_ip = ip
-  refreshAll().catch(() => {})
+  refreshAll().catch(() => {
+  })
 }
 
 async function openDetails(row) {
@@ -263,7 +282,8 @@ async function openDetails(row) {
 }
 
 function onDeleted() {
-  refreshAll().catch(() => {})
+  refreshAll().catch(() => {
+  })
 }
 
 function onLangCommand(lang) {
@@ -275,7 +295,8 @@ function scheduleEventRefresh() {
   if (!autoRefresh.value) return
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => {
-    refreshAll().catch(() => {})
+    refreshAll().catch(() => {
+    })
   }, 180)
 }
 
@@ -287,7 +308,7 @@ function connectEvents() {
 }
 
 function refreshNow() {
-  refreshAll().catch((err) => setLive('error', t('refreshFailed', { msg: err.message })))
+  refreshAll().catch((err) => setLive('error', t('refreshFailed', {msg: err.message})))
 }
 
 onMounted(async () => {
@@ -296,10 +317,22 @@ onMounted(async () => {
   await refreshAll()
   await loadOptions()
   pollTimers = [
-    setInterval(() => { if (autoRefresh.value) loadStats().catch(() => {}) }, 5000),
-    setInterval(() => { if (autoRefresh.value) loadRequests().catch(() => {}) }, 9000),
-    setInterval(() => { loadOptions().catch(() => {}) }, 30000),
-    setInterval(() => { loadScheduler().catch(() => {}) }, 5000),
+    setInterval(() => {
+      if (autoRefresh.value) loadStats().catch(() => {
+      })
+    }, 5000),
+    setInterval(() => {
+      if (autoRefresh.value) loadRequests().catch(() => {
+      })
+    }, 9000),
+    setInterval(() => {
+      loadOptions().catch(() => {
+      })
+    }, 30000),
+    setInterval(() => {
+      loadScheduler().catch(() => {
+      })
+    }, 5000),
   ]
 })
 

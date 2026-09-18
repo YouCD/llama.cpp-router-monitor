@@ -23,6 +23,7 @@ import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/compon
 import { CanvasRenderer } from 'echarts/renderers'
 import { t } from '../i18n'
 import { fmtCompact } from '../utils'
+import { currentTheme } from '../theme'
 
 echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -38,16 +39,22 @@ let statusChart = null
 let requestsChart = null
 
 const DATE_COLORS = {
-  prompt: '#409eff',
-  completion: '#67c23a',
-  total: '#e6a23c',
+  prompt: '#3b82f6',
+  completion: '#22c55e',
+  total: '#f59e0b',
 }
 
 const statusColor = (v) => {
-  if (v <= 399) return '#67c23a'
-  if (v < 500) return '#e6a23c'
-  return '#f56c6c'
+  if (v <= 399) return '#22c55e'
+  if (v < 500) return '#f59e0b'
+  return '#ef4444'
 }
+
+// 轴/图例文字与网格线颜色跟随主题（深/浅）
+function textColor() {
+  return currentTheme.value === 'dark' ? '#94a3b8' : '#6b7280'
+}
+const GRID_LINE = 'rgba(100, 116, 139, 0.2)'
 
 function render() {
   const items = props.items || []
@@ -76,19 +83,19 @@ function renderToken(dates, items, labels) {
       bottom: 0,
       itemWidth: 14,
       itemHeight: 8,
-      textStyle: { color: '#909399' },
+      textStyle: { color: textColor() },
     },
     grid: { left: 10, right: 10, top: 20, bottom: 30, containLabel: true },
     xAxis: {
       type: 'category',
       data: dates,
       boundaryGap: false,
-      axisLabel: { color: '#909399' },
+      axisLabel: { color: textColor() },
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#909399' },
-      splitLine: { lineStyle: { color: 'rgba(144,147,153,0.15)' } },
+      axisLabel: { color: textColor() },
+      splitLine: { lineStyle: { color: GRID_LINE } },
     },
     series: [
       {
@@ -131,24 +138,25 @@ function renderStatus(dates, items, labels) {
       bottom: 0,
       itemWidth: 14,
       itemHeight: 8,
-      textStyle: { color: '#909399' },
+      textStyle: { color: textColor() },
     },
     grid: { left: 10, right: 10, top: 20, bottom: 30, containLabel: true },
     xAxis: {
       type: 'category',
       data: dates,
-      axisLabel: { color: '#909399' },
+      axisLabel: { color: textColor() },
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#909399' },
-      splitLine: { lineStyle: { color: 'rgba(144,147,153,0.15)' } },
+      axisLabel: { color: textColor() },
+      splitLine: { lineStyle: { color: GRID_LINE } },
     },
     series: [
       {
         name: labels.ok,
         type: 'bar',
         stack: 'status',
+        barMaxWidth: 28,
         data: items.map((d) => d.ok_requests || 0),
         itemStyle: { color: statusColor(200) },
       },
@@ -156,6 +164,7 @@ function renderStatus(dates, items, labels) {
         name: labels.err4xx,
         type: 'bar',
         stack: 'status',
+        barMaxWidth: 28,
         data: items.map((d) => d.err4xx || 0),
         itemStyle: { color: statusColor(404) },
       },
@@ -163,6 +172,7 @@ function renderStatus(dates, items, labels) {
         name: labels.err5xx,
         type: 'bar',
         stack: 'status',
+        barMaxWidth: 28,
         data: items.map((d) => d.err5xx || 0),
         itemStyle: { color: statusColor(500) },
       },
@@ -179,12 +189,12 @@ function renderRequests(dates, items, labels) {
       type: 'category',
       data: dates,
       boundaryGap: false,
-      axisLabel: { color: '#909399' },
+      axisLabel: { color: textColor() },
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#909399' },
-      splitLine: { lineStyle: { color: 'rgba(144,147,153,0.15)' } },
+      axisLabel: { color: textColor() },
+      splitLine: { lineStyle: { color: GRID_LINE } },
     },
     series: [
       {
@@ -207,6 +217,7 @@ function resizeAll() {
 }
 
 watch(() => props.items, render, { deep: true })
+watch(currentTheme, render)
 
 onMounted(() => {
   tokenChart = echarts.init(tokenEl.value)
@@ -242,17 +253,18 @@ onBeforeUnmount(() => {
 }
 
 .chart-section {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 10px;
+  background: var(--app-panel);
+  border: 1px solid var(--app-line);
+  border-radius: var(--app-radius, 12px);
   padding: 16px;
+  box-shadow: var(--app-card-shadow);
 }
 
 .chart-title {
-  margin: 0 0 12px;
-  font-size: 14px;
+  margin: 0 0 10px;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--el-text-color-primary);
+  color: var(--app-text);
 }
 
 .chart-box {

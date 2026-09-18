@@ -260,9 +260,10 @@ export function methodClass(method) {
   return 'method-other'
 }
 
+// 错误率分级：<1% 绿（正常）/ 1%–5% 琥珀（警告）/ >5% 红（异常）
 export function errRateTone(rate) {
-  if (!Number.isFinite(rate) || rate <= 0) return 'tone-good'
-  if (rate < 0.05) return 'tone-warm'
+  if (!Number.isFinite(rate) || rate < 0.01) return 'tone-good'
+  if (rate <= 0.05) return 'tone-warm'
   return 'tone-critical'
 }
 

@@ -23,14 +23,6 @@
       <el-select :model-value="f.backend" :placeholder="t('filterBackend')" filterable clearable @update:model-value="v => (f.backend = v)">
         <el-option v-for="b in backends" :key="b" :label="b" :value="b" />
       </el-select>
-      <el-input
-        :model-value="f.status"
-        :placeholder="t('filterStatus')"
-        clearable
-        @update:model-value="v => (f.status = v)"
-        @keyup.enter="apply"
-        style="width: 110px"
-      />
       <el-date-picker
         v-model="f.timeRange"
         type="datetimerange"
@@ -40,18 +32,28 @@
         :start-placeholder="t('filterStartTime')"
         :end-placeholder="t('filterEndTime')"
       />
-      <el-button
-        text
-        :icon="Filter"
-        class="adv-toggle"
-        :class="{ active: showAdv }"
-        @click="showAdv = !showAdv"
-      >
-        {{ t('filterAdvanced') }}
-      </el-button>
-      <el-button text :icon="RefreshLeft" class="adv-toggle" @click="reset">
-        {{ t('filterReset') }}
-      </el-button>
+      <div class="filter-tools">
+        <el-input
+          :model-value="f.status"
+          :placeholder="t('filterStatus')"
+          clearable
+          @update:model-value="v => (f.status = v)"
+          @keyup.enter="apply"
+          style="width: 110px"
+        />
+        <el-button
+          text
+          :icon="Filter"
+          class="adv-toggle"
+          :class="{ active: showAdv }"
+          @click="showAdv = !showAdv"
+        >
+          {{ t('filterAdvanced') }}
+        </el-button>
+        <el-button text :icon="RefreshLeft" class="adv-toggle" @click="reset">
+          {{ t('filterReset') }}
+        </el-button>
+      </div>
     </div>
 
     <div v-show="showAdv" class="filter-bar adv-panel">

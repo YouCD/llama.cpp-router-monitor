@@ -3,7 +3,7 @@
     <div class="stats-grid">
       <div
         class="stat-card"
-        :class="{ featured: c.featured, [c.tone]: !!c.tone }"
+        :class="{ [c.tone]: !!c.tone, ['tier-' + (c.tier || 'secondary')]: true }"
         v-for="c in allCards"
         :key="c.key"
       >
@@ -53,23 +53,23 @@ const groups = computed(() => {
     {
       title: t('groupFlow'),
       cards: [
-        { key: 'active', label: t('metricActive'), value: s.active_connections || 0, format: fmtNum, foot: t('metricInFlight'), step: 1 },
-        { key: 'reqhour', label: t('metricReqHour'), value: Math.round((s.requests_per_minute || 0) * 60), format: fmtNum, foot: windowLabel, step: 1 },
-        { key: 'output', label: t('metricOutputSec'), value: props.outputSec, format: (v) => Math.round(v).toString(), foot: t('metricShownRows'), featured: true },
+        { key: 'active', label: t('metricActive'), value: s.active_connections || 0, format: fmtNum, foot: t('metricInFlight'), step: 1, tier: 'primary' },
+        { key: 'reqhour', label: t('metricReqHour'), value: Math.round((s.requests_per_minute || 0) * 60), format: fmtNum, foot: windowLabel, step: 1, tier: 'primary' },
+        { key: 'output', label: t('metricOutputSec'), value: props.outputSec, format: (v) => Math.round(v).toString(), foot: t('metricShownRows'), tier: 'primary' },
       ],
     },
     {
       title: t('groupQuality'),
       cards: [
-        { key: 'ttft', label: t('metricAvgTtft'), value: s.avg_first_byte_ms || 0, format: fmtDuration, foot: t('metricFirstToken'), featured: true },
-        { key: 'err', label: t('metricErrorRateLLM'), value: llmError, format: fmtPctNum, tone: llmTone, foot: errFoot },
+        { key: 'ttft', label: t('metricAvgTtft'), value: s.avg_first_byte_ms || 0, format: fmtDuration, foot: t('metricFirstToken'), tier: 'secondary' },
+        { key: 'err', label: t('metricErrorRateLLM'), value: llmError, format: fmtPctNum, tone: llmTone, foot: errFoot, tier: 'secondary' },
       ],
     },
     {
       title: t('groupResource'),
       cards: [
-        { key: 'total', label: t('metricTotalReq'), value: totalMatching, format: fmtNum, foot: windowLabel, step: 1 },
-        { key: 'tokens', label: t('metricTotalTok'), value: totalTokens, format: fmtCompact, exact: fmtNum(totalTokens), foot: windowLabel, step: 1 },
+        { key: 'total', label: t('metricTotalReq'), value: totalMatching, format: fmtNum, foot: windowLabel, step: 1, tier: 'summary' },
+        { key: 'tokens', label: t('metricTotalTok'), value: totalTokens, format: fmtCompact, exact: fmtNum(totalTokens), foot: windowLabel, step: 1, tier: 'summary' },
       ],
     },
   ]
