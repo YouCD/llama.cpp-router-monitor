@@ -13,9 +13,11 @@
       <span class="sched-cell" :title="t('schedBase')">
         <strong class="mono">{{ data.active_base_url || '-' }}</strong>
       </span>
-      <span class="sched-cell mono">{{ t('schedLease') }} {{ fmtSec(data.lease_seconds) }}</span>
-      <span class="sched-cell mono">{{ t('schedRemaining') }} {{ fmtSec(data.lease_remaining_seconds) }}</span>
-      <span class="sched-cell mono">{{ t('schedIdle') }} {{ fmtSec(data.idle_seconds) }}</span>
+      <template v-if="!isBackground">
+        <span class="sched-cell mono">{{ t('schedLease') }} {{ fmtSec(data.lease_seconds) }}</span>
+        <span class="sched-cell mono">{{ t('schedRemaining') }} {{ fmtSec(data.lease_remaining_seconds) }}</span>
+        <span class="sched-cell mono">{{ t('schedIdle') }} {{ fmtSec(data.idle_seconds) }}</span>
+      </template>
     </div>
   </div>
 </template>
@@ -52,6 +54,7 @@ const readyLabel = computed(() => {
   return props.data.ready ? t('schedReady') : t('schedNotReady')
 })
 const readyTone = computed(() => (props.data && props.data.ready ? 'tone-good' : 'tone-warn'))
+const isBackground = computed(() => !!(props.data && props.data.mode === 'background'))
 </script>
 
 <style scoped>

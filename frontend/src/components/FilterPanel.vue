@@ -17,14 +17,12 @@
     </div>
 
     <div class="filter-bar">
-      <el-input
-        :model-value="f.q"
-        :placeholder="t('filterSearch')"
-        clearable
-        @update:model-value="v => (f.q = v)"
-        @clear="reset"
-        @keyup.enter="apply"
-      />
+      <el-select :model-value="f.model" :placeholder="t('filterModel')" filterable clearable @update:model-value="v => (f.model = v)">
+        <el-option v-for="m in models" :key="m" :label="m" :value="m" />
+      </el-select>
+      <el-select :model-value="f.backend" :placeholder="t('filterBackend')" filterable clearable @update:model-value="v => (f.backend = v)">
+        <el-option v-for="b in backends" :key="b" :label="b" :value="b" />
+      </el-select>
       <el-input
         :model-value="f.status"
         :placeholder="t('filterStatus')"
@@ -51,16 +49,14 @@
       >
         {{ t('filterAdvanced') }}
       </el-button>
+      <el-button text :icon="RefreshLeft" class="adv-toggle" @click="reset">
+        {{ t('filterReset') }}
+      </el-button>
     </div>
 
     <div v-show="showAdv" class="filter-bar adv-panel">
       <el-input :model-value="f.path" :placeholder="t('filterPath')" clearable @update:model-value="v => (f.path = v)" @keyup.enter="apply" />
-      <el-select :model-value="f.model" :placeholder="t('filterModel')" filterable clearable @update:model-value="v => (f.model = v)">
-        <el-option v-for="m in models" :key="m" :label="m" :value="m" />
-      </el-select>
-      <el-select :model-value="f.backend" :placeholder="t('filterBackend')" filterable clearable @update:model-value="v => (f.backend = v)">
-        <el-option v-for="b in backends" :key="b" :label="b" :value="b" />
-      </el-select>
+      <el-input :model-value="f.client_ip" :placeholder="t('filterClient')" clearable @update:model-value="v => (f.client_ip = v)" @keyup.enter="apply" style="width: 150px" />
       <el-select :model-value="f.method" :placeholder="t('filterMethod')" clearable @update:model-value="v => (f.method = v)" style="width: 130px">
         <el-option v-for="m in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']" :key="m" :label="m" :value="m" />
       </el-select>
@@ -79,7 +75,7 @@
 
 <script setup>
 import { ref, computed, reactive, watch, onUnmounted } from 'vue'
-import { Filter } from '@element-plus/icons-vue'
+import { Filter, RefreshLeft } from '@element-plus/icons-vue'
 import { t } from '../i18n'
 import { todayRange } from '../utils'
 
@@ -91,8 +87,8 @@ const props = defineProps({
 const emit = defineEmits(['apply'])
 
 const f = reactive({
-  q: '',
   path: '',
+  client_ip: '',
   model: '',
   backend: '',
   method: '',
@@ -128,8 +124,8 @@ watch(f, () => {
 
 function collect() {
   const filters = {}
-  if (f.q) filters.q = f.q.trim()
   if (f.path) filters.path = f.path.trim()
+  if (f.client_ip) filters.client_ip = f.client_ip.trim()
   if (f.model) filters.model = f.model
   if (f.backend) filters.backend = f.backend
   if (f.method) filters.method = f.method
@@ -150,8 +146,8 @@ function apply() {
 }
 
 function clearFilters() {
-  f.q = ''
   f.path = ''
+  f.client_ip = ''
   f.model = ''
   f.backend = ''
   f.method = ''
@@ -168,7 +164,8 @@ function reset() {
   suppressWatch = true
   clearFilters()
   lastQuick.value = 'all'
-  emit('apply', {})
+  // 与页面初始状态一致：保留默认时间范围（今天），而不是全历史空筛选
+  emit('apply', collect())
 }
 
 function applyQuick(kind) {
@@ -177,7 +174,8 @@ function applyQuick(kind) {
   lastQuick.value = kind
   if (kind === 'all') {
     clearFilters()
-    emit('apply', {})
+    // 同 reset：保留默认时间范围（今天）
+    emit('apply', collect())
   } else if (kind === 'ok') {
     f.status = '200'
     f.errors_only = false
@@ -211,7 +209,13 @@ function setBackend(url) {
   f.backend = url
 }
 
-defineExpose({ collect, setBackend })
+function setClientIP(ip) {
+  if (debounceTimer) clearTimeout(debounceTimer)
+  suppressWatch = true
+  f.client_ip = ip
+}
+
+defineExpose({ collect, setBackend, setClientIP })
 
 onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer)

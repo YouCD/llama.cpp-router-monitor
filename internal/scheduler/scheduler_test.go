@@ -1,4 +1,4 @@
-package main
+package scheduler
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"llama_proxy/internal/config"
 )
 
 // fakeProbe 返回一个就绪探测函数：前 attempts 次失败，之后成功。
@@ -23,19 +25,21 @@ func fakeProbe(attempts int) func(context.Context, string) bool {
 
 func newTestScheduler(t *testing.T, idle time.Duration) *Scheduler {
 	t.Helper()
-	cfg := &SchedulingConfig{
-		Coding: CodingConfig{
+	cfg := &config.SchedulingConfig{
+		Coding: config.ProcessConfig{
 			Command:      "",
 			Header:       map[string]string{"X-LLM-Purpose": "coding"},
 			ReadinessURL: "http://127.0.0.1:8080",
+			APIKey:       "coding-key",
 		},
-		Background: BackgroundConfig{
+		Background: config.ProcessConfig{
 			Command:      "",
 			ReadinessURL: "http://127.0.0.1:8080",
+			APIKey:       "bg-key",
 		},
 	}
-	sw := SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: 500 * time.Millisecond}
-	s := NewScheduler(cfg, idle, sw, &http.Client{})
+	sw := config.SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: 500 * time.Millisecond}
+	s := New(cfg, idle, sw, &http.Client{})
 	s.SetLogger(func(string, ...any) {})
 	s.SetProbe(fakeProbe(0)) // 立即就绪
 	return s
@@ -46,18 +50,18 @@ func TestCodingHeaderMatch(t *testing.T) {
 
 	r, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
 	r.Header.Set("X-LLM-Purpose", "coding")
-	if !s.codingHeaderMatch(r.Header) {
+	if !s.CodingHeaderMatch(r.Header) {
 		t.Fatal("expected coding match")
 	}
 
 	r2, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
 	r2.Header.Set("X-LLM-Purpose", "other")
-	if s.codingHeaderMatch(r2.Header) {
+	if s.CodingHeaderMatch(r2.Header) {
 		t.Fatal("unexpected coding match for other purpose")
 	}
 
 	r3, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
-	if s.codingHeaderMatch(r3.Header) {
+	if s.CodingHeaderMatch(r3.Header) {
 		t.Fatal("unexpected coding match without header")
 	}
 }
@@ -71,6 +75,9 @@ func TestStartBackgroundThenEnsureCoding(t *testing.T) {
 	}
 	if s.mode != modeBackground || !s.readyOK {
 		t.Fatalf("expected background ready, got mode=%s ready=%v", s.mode, s.readyOK)
+	}
+	if got := s.ActiveAPIKey(); got != "bg-key" {
+		t.Fatalf("background ActiveAPIKey=%q, want bg-key", got)
 	}
 	if s.IsCodingActive() {
 		t.Fatal("should not be coding active initially")
@@ -93,6 +100,9 @@ func TestStartBackgroundThenEnsureCoding(t *testing.T) {
 	}
 	if got := s.ActiveBaseURL(); got != "http://127.0.0.1:8080/v1" {
 		t.Fatalf("unexpected base url: %s", got)
+	}
+	if got := s.ActiveAPIKey(); got != "coding-key" {
+		t.Fatalf("coding ActiveAPIKey=%q, want coding-key", got)
 	}
 }
 
@@ -129,7 +139,7 @@ func TestIdleSwitchBackToBackground(t *testing.T) {
 	}
 }
 
-func TestNonCodingRejectedDuringCoding(t *testing.T) {
+func TestCodingActiveStateAfterSwitch(t *testing.T) {
 	s := newTestScheduler(t, time.Hour)
 	ctx := context.Background()
 	_ = s.Start(ctx)
@@ -139,8 +149,34 @@ func TestNonCodingRejectedDuringCoding(t *testing.T) {
 	if !s.IsCodingActive() {
 		t.Fatal("should be coding active")
 	}
-	if s.codingHeaderMatch(http.Header{}) {
+	if s.CodingHeaderMatch(http.Header{}) {
 		t.Fatal("empty header must not be coding")
+	}
+}
+
+// TestBackgroundReady 验证 BackgroundReady 仅当 background 进程处于就绪状态时返回转发基址。
+func TestBackgroundReady(t *testing.T) {
+	s := newTestScheduler(t, time.Hour)
+	ctx := context.Background()
+
+	// 启动前未就绪。
+	if _, ok := s.BackgroundReady(); ok {
+		t.Fatal("BackgroundReady must be false before start")
+	}
+
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	base, ok := s.BackgroundReady()
+	if !ok || base != "http://127.0.0.1:8080/v1" {
+		t.Fatalf("BackgroundReady after start = (%q, %v), want (http://127.0.0.1:8080/v1, true)", base, ok)
+	}
+
+	// 切到 coding 后，background 不再就绪。
+	ready, _ := s.EnsureCoding(ctx)
+	<-ready
+	if _, ok := s.BackgroundReady(); ok {
+		t.Fatal("BackgroundReady must be false while in coding mode")
 	}
 }
 
@@ -182,12 +218,12 @@ func TestOpenProcessLogEmpty(t *testing.T) {
 }
 
 func TestReconcileReadyAfterStartupTimeout(t *testing.T) {
-	cfg := &SchedulingConfig{
-		Coding:     CodingConfig{Command: "sleep 30", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: "http://127.0.0.1:8080"},
-		Background: BackgroundConfig{Command: "sleep 30", ReadinessURL: "http://127.0.0.1:8080"},
+	cfg := &config.SchedulingConfig{
+		Coding:     config.ProcessConfig{Command: "sleep 30", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: "http://127.0.0.1:8080"},
+		Background: config.ProcessConfig{Command: "sleep 30", ReadinessURL: "http://127.0.0.1:8080"},
 	}
-	sw := SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: 300 * time.Millisecond}
-	s := NewScheduler(cfg, time.Hour, sw, &http.Client{})
+	sw := config.SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: 300 * time.Millisecond}
+	s := New(cfg, time.Hour, sw, &http.Client{})
 	s.SetLogger(func(string, ...any) {})
 	// 先让 probe 一直失败，触发启动超时（readyOK 保持 false）。
 	s.SetProbe(func(context.Context, string) bool { return false })
@@ -229,15 +265,15 @@ func TestWaitReadySendsAuthorization(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &SchedulingConfig{
-		Coding:     CodingConfig{Command: "", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: server.URL},
-		Background: BackgroundConfig{Command: "", ReadinessURL: server.URL},
+	cfg := &config.SchedulingConfig{
+		Coding:     config.ProcessConfig{Command: "", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: server.URL},
+		Background: config.ProcessConfig{Command: "", ReadinessURL: server.URL},
 	}
-	sw := SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: time.Second}
-	s := NewScheduler(cfg, time.Hour, sw, server.Client())
+	sw := config.SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: time.Second}
+	s := New(cfg, time.Hour, sw, server.Client())
 	s.SetLogger(func(string, ...any) {})
 
-	if err := s.waitReady(context.Background(), server.URL, "Bearer secret-token", time.Second); err != nil {
+	if err := s.waitReady(context.Background(), server.URL, "secret-token", time.Second); err != nil {
 		t.Fatalf("waitReady: %v", err)
 	}
 	if gotAuth != "Bearer secret-token" {
@@ -265,12 +301,12 @@ func TestAPIBaseFromReadiness(t *testing.T) {
 }
 
 func TestMarkReadyClosedConcurrent(t *testing.T) {
-	cfg := &SchedulingConfig{
-		Coding:     CodingConfig{Command: "sleep 30", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: "http://127.0.0.1:8080"},
-		Background: BackgroundConfig{Command: "sleep 30", ReadinessURL: "http://127.0.0.1:8080"},
+	cfg := &config.SchedulingConfig{
+		Coding:     config.ProcessConfig{Command: "sleep 30", Header: map[string]string{"X-LLM-Purpose": "coding"}, ReadinessURL: "http://127.0.0.1:8080"},
+		Background: config.ProcessConfig{Command: "sleep 30", ReadinessURL: "http://127.0.0.1:8080"},
 	}
-	sw := SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: time.Second}
-	s := NewScheduler(cfg, time.Hour, sw, &http.Client{})
+	sw := config.SwitchConfig{DrainTimeout: time.Millisecond, KillTimeout: time.Millisecond, StartupTimeout: time.Second}
+	s := New(cfg, time.Hour, sw, &http.Client{})
 	s.SetLogger(func(string, ...any) {})
 
 	ch := make(chan struct{})

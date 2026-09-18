@@ -4,25 +4,28 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"llama_proxy/internal/config"
+	"llama_proxy/internal/httpx"
+	"llama_proxy/internal/meta"
+	"llama_proxy/internal/model"
 
 	"github.com/youcd/toolkit/log"
 )
 
+// handleProxy 是代理转发入口：选择后端、转发请求、流式回传并记录指标。
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// 校验客户端 API Key（如果已配置）
 	if s.cfg.APIKey != "" {
 		clientAuth := strings.TrimSpace(r.Header.Get("Authorization"))
 		if clientAuth != "Bearer "+s.cfg.APIKey {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized", "message": "missing or invalid api_key"})
+			httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized", "message": "missing or invalid api_key"})
 			return
 		}
 	}
@@ -31,85 +34,36 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.shouldRecordProxy(r.URL.Path) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
 	started := time.Now()
-	requestID := newID()
-	clientIP := getClientIP(r)
+	requestID := httpx.NewID()
+	clientIP := httpx.ClientIP(r)
 	// 创建带 request_id 的请求上下文，日志可按 request_id 串联整个请求生命周期。
 	ctx := s.newInflightCtx(r.Context(), requestID)
-	backendURL, trimmedQuery, backendCfg, err := s.selectBackend(w, r, ctx)
+	firstCand, trimmedQuery, nextBackend, err := s.selectBackend(w, r, ctx)
 	if err != nil {
-		if errors.Is(err, errScheduledRejected) {
-			return // 响应已由 selectBackend 写出
-		}
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
 	if s.cfg.MaxRequestBytes > 0 && r.ContentLength > s.cfg.MaxRequestBytes {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "request is too large"})
+		httpx.WriteJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "request is too large"})
 		return
 	}
 
-	requestBody, err := readWithLimit(r.Body, s.cfg.MaxRequestBytes)
+	originalBody, err := httpx.ReadWithLimit(r.Body, s.cfg.MaxRequestBytes)
 	if err != nil {
 		code := http.StatusBadRequest
-		if errors.Is(err, errTooLarge) {
+		if errors.Is(err, httpx.ErrTooLarge) {
 			code = http.StatusRequestEntityTooLarge
 		}
-		writeJSON(w, code, map[string]any{"error": err.Error()})
+		httpx.WriteJSON(w, code, map[string]any{"error": err.Error()})
 		return
 	}
 
-	isStreaming, model := detectRequestMeta(requestBody)
-	if backendCfg != nil && backendCfg.Model != "" {
-		if newBody, newModel, rerr := rewriteModel(requestBody, backendCfg.Model); rerr == nil {
-			requestBody = newBody
-			model = newModel
-		}
-	}
-	log.WithCtx(ctx).Infof("request received: id=%s method=%s path=%s client=%s backend=%s model=%s stream=%v",
-		requestID, r.Method, r.URL.Path, clientIP, backendURL, model, isStreaming)
-	reqRawPath, err := s.saveRawPayload(requestID, "request", requestBody)
-	if err != nil {
-		log.WithCtx(ctx).Infof("save request raw failed: %v", err)
-	}
-
-	if err := s.insertRequest(RequestRecord{
-		ID:             requestID,
-		CreatedAt:      started.UTC(),
-		Method:         r.Method,
-		Path:           r.URL.Path,
-		Query:          trimmedQuery,
-		ClientIP:       clientIP,
-		BackendURL:     backendURL,
-		Model:          model,
-		IsStreaming:    isStreaming,
-		RequestBytes:   int64(len(requestBody)),
-		RequestRawPath: reqRawPath,
-		UserAgent:      r.UserAgent(),
-	}); err != nil {
-		log.WithCtx(ctx).Infof("insert request failed: %v", err)
-	}
-
-	target := backendURL + buildProxyPath(backendURL, r.URL.Path)
-	if trimmedQuery != "" {
-		target += "?" + trimmedQuery
-	}
-
-	outReq, err := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(requestBody))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	copyRequestHeaders(outReq.Header, r.Header)
-	if backendCfg != nil && backendCfg.APIKey != "" {
-		outReq.Header.Set("Authorization", "Bearer "+backendCfg.APIKey)
-	}
-	outReq.Header.Set("X-Proxy-Request-ID", requestID)
-	outReq.ContentLength = int64(len(requestBody))
+	isStreaming, detectedModel := meta.DetectRequestMeta(originalBody)
 
 	s.active.Add(1)
 	s.hub.Broadcast(map[string]any{"kind": "active", "active_connections": s.active.Load(), "time": time.Now().UTC()})
@@ -118,17 +72,113 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		s.hub.Broadcast(map[string]any{"kind": "active", "active_connections": s.active.Load(), "time": time.Now().UTC()})
 	}()
 
-	resp, err := s.client.Do(outReq)
-	if err != nil {
-		total := float64(time.Since(started).Milliseconds())
-		_ = s.finishRequest(requestID, RequestRecord{StatusCode: 502, ErrorText: err.Error(), TotalMs: total})
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "request_id": requestID})
-		return
+	// 转发请求：当前后端失败（连接错误，或响应体写出前返回非 200 状态码）时自动尝试
+	// 下一个未试过的后端，直到成功或候选耗尽。候选耗尽时把每个后端的请求结果按后端
+	// 分组返回给客户端：全部连接错误时返回 502；最后一次是非 200 响应时沿用该状态码，
+	// 响应体中列出每个后端的状态/响应体或错误。
+	var (
+		cand     = firstCand
+		tried    = map[string]bool{candidateKey(firstCand): true}
+		resp     *http.Response
+		body     []byte
+		reqModel = detectedModel
+		lastErr  error
+		attempts []backendAttempt
+	)
+	for {
+		body = originalBody
+		reqModel = detectedModel
+		if cand.cfg != nil && cand.cfg.Model != "" {
+			if newBody, newModel, rerr := meta.RewriteModel(originalBody, cand.cfg.Model); rerr == nil {
+				body = newBody
+				reqModel = newModel
+			}
+		}
+		log.WithCtx(ctx).Infof("request received: id=%s method=%s path=%s client=%s backend=%s model=%s stream=%v",
+			requestID, r.Method, r.URL.Path, clientIP, cand.url, reqModel, isStreaming)
+
+		target := cand.url + buildProxyPath(cand.url, r.URL.Path)
+		if trimmedQuery != "" {
+			target += "?" + trimmedQuery
+		}
+		outReq, rerr := http.NewRequestWithContext(ctx, r.Method, target, bytes.NewReader(body))
+		if rerr != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"error": rerr.Error()})
+			return
+		}
+		httpx.CopyRequestHeaders(outReq.Header, r.Header)
+		if cand.cfg != nil && cand.cfg.APIKey != "" {
+			outReq.Header.Set("Authorization", "Bearer "+cand.cfg.APIKey)
+		}
+		outReq.Header.Set("X-Proxy-Request-ID", requestID)
+		outReq.ContentLength = int64(len(body))
+
+		resp, err = s.client.Do(outReq)
+		if err != nil {
+			lastErr = err
+			attempts = append(attempts, backendAttempt{
+				Name:  candidateName(cand),
+				URL:   cand.url,
+				Error: err.Error(),
+			})
+			if nb := nextBackend(tried); nb != nil {
+				log.WithCtx(ctx).Infof("backend request failed, failing over: id=%s failed=%s err=%v next=%s",
+					requestID, cand.url, err, nb.url)
+				tried[candidateKey(nb)] = true
+				cand = nb
+				continue
+			}
+			total := float64(time.Since(started).Milliseconds())
+			// 候选耗尽时记录尚未插入（插入在循环之后），此处先补插再收尾；
+			// 每个后端的失败原因按后端分组返回给客户端。
+			s.recordRequest(ctx, requestID, started, r, clientIP, trimmedQuery, isStreaming, cand, reqModel, body)
+			_ = s.store.FinishRequest(requestID, model.RequestRecord{Model: reqModel, StatusCode: 502, ErrorText: lastErr.Error(), TotalMs: total})
+			httpx.WriteJSON(w, http.StatusBadGateway, map[string]any{
+				"error":      "all backends failed",
+				"request_id": requestID,
+				"attempts":   attempts,
+			})
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			respBody, truncated := readLimited(resp.Body, maxFailReportBytes)
+			attempts = append(attempts, backendAttempt{
+				Name:       candidateName(cand),
+				URL:        cand.url,
+				StatusCode: resp.StatusCode,
+				Body:       string(respBody),
+				Truncated:  truncated,
+			})
+			if nb := nextBackend(tried); nb != nil {
+				log.WithCtx(ctx).Infof("backend returned %d, failing over: id=%s failed=%s next=%s",
+					resp.StatusCode, requestID, cand.url, nb.url)
+				_ = resp.Body.Close()
+				tried[candidateKey(nb)] = true
+				cand = nb
+				continue
+			}
+			// 所有后端都返回非 200：每个后端的响应内容按后端分组返回，
+			// 状态码沿用最后一个后端的。
+			total := float64(time.Since(started).Milliseconds())
+			s.recordRequest(ctx, requestID, started, r, clientIP, trimmedQuery, isStreaming, cand, reqModel, body)
+			_ = s.store.FinishRequest(requestID, model.RequestRecord{Model: reqModel, StatusCode: resp.StatusCode, TotalMs: total})
+			_ = resp.Body.Close()
+			httpx.WriteJSON(w, resp.StatusCode, map[string]any{
+				"error":      "all backends returned non-200",
+				"request_id": requestID,
+				"attempts":   attempts,
+			})
+			return
+		}
+		break
 	}
+
+	s.recordRequest(ctx, requestID, started, r, clientIP, trimmedQuery, isStreaming, cand, reqModel, body)
+
 	defer resp.Body.Close()
 
 	for k, vals := range resp.Header {
-		if isHopByHopHeader(k) {
+		if httpx.IsHopByHopHeader(k) {
 			continue
 		}
 		for _, v := range vals {
@@ -141,7 +191,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var firstByteMs float64
 	var copied int64
 	var chunks int64
-	capturer := newLimitedBuffer(s.cfg.MaxCaptureBytes)
+	capturer := meta.NewLimitedBuffer(s.cfg.MaxCaptureBytes)
 
 	if isStreamingResponse(resp, isStreaming) {
 		copied, firstByteMs, chunks, err = streamCopySSE(w, resp.Body, capturer, started)
@@ -153,33 +203,33 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respBytes := capturer.Bytes()
-	respRawPath, saveErr := s.saveRawPayload(requestID, "response", respBytes)
+	respRawPath, saveErr := s.store.SaveRawPayload(requestID, "response", respBytes)
 	if saveErr != nil {
 		log.WithCtx(ctx).Infof("save response raw failed: %v", saveErr)
 	}
 
-	meta := parseResponseMeta(resp.Header, respBytes)
-	finalModel := model
-	if meta.Model != "" {
-		finalModel = meta.Model
+	parsed := meta.ParseResponseMeta(resp.Header, respBytes)
+	finalModel := reqModel
+	if parsed.Model != "" {
+		finalModel = parsed.Model
 	}
 	cacheHitPct := 0.0
-	if meta.PromptTokens > 0 && meta.CachedPromptTokens > 0 {
-		cacheHitPct = float64(meta.CachedPromptTokens) / float64(meta.PromptTokens) * 100
+	if parsed.PromptTokens > 0 && parsed.CachedPromptTokens > 0 {
+		cacheHitPct = float64(parsed.CachedPromptTokens) / float64(parsed.PromptTokens) * 100
 	}
 	totalMs := float64(time.Since(started).Milliseconds())
 
-	if err := s.finishRequest(requestID, RequestRecord{
+	if err := s.store.FinishRequest(requestID, model.RequestRecord{
 		Model:              finalModel,
 		StatusCode:         resp.StatusCode,
 		ResponseBytes:      copied,
-		PromptTokens:       meta.PromptTokens,
-		CachedPromptTokens: meta.CachedPromptTokens,
+		PromptTokens:       parsed.PromptTokens,
+		CachedPromptTokens: parsed.CachedPromptTokens,
 		CacheHitPct:        cacheHitPct,
-		CompletionTokens:   meta.CompletionTok,
-		TotalTokens:        meta.TotalTokens,
-		PromptMs:           meta.PromptMs,
-		CompletionMs:       meta.CompletionMs,
+		CompletionTokens:   parsed.CompletionTok,
+		TotalTokens:        parsed.TotalTokens,
+		PromptMs:           parsed.PromptMs,
+		CompletionMs:       parsed.CompletionMs,
 		TotalMs:            totalMs,
 		FirstByteMs:        firstByteMs,
 		ChunksCount:        chunks,
@@ -197,18 +247,19 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		"status_code":          resp.StatusCode,
 		"total_ms":             totalMs,
 		"first_byte_ms":        firstByteMs,
-		"prompt_tokens":        meta.PromptTokens,
-		"cached_prompt_tokens": meta.CachedPromptTokens,
+		"prompt_tokens":        parsed.PromptTokens,
+		"cached_prompt_tokens": parsed.CachedPromptTokens,
 		"cache_hit_pct":        cacheHitPct,
-		"completion_tokens":    meta.CompletionTok,
-		"total_tokens":         meta.TotalTokens,
+		"completion_tokens":    parsed.CompletionTok,
+		"total_tokens":         parsed.TotalTokens,
 		"model":                finalModel,
 		"response_bytes":       copied,
 		"chunks_count":         chunks,
-		"backend_url":          backendURL,
+		"backend_url":          cand.url,
 		"active_connections":   s.active.Load(),
 	})
 }
+
 func (s *Server) pathMatches(path string, list []string) bool {
 	p := strings.Trim(path, "/")
 	if p == "" {
@@ -247,86 +298,254 @@ func buildProxyPath(backendURL, path string) string {
 	return path
 }
 
-// selectBackend 选择本次请求的转发后端。启用进程调度时优先走调度逻辑：
-//   - 开发(coding)流量：确保 coding 进程就绪（未就绪则 pending 等待，超时返回 503），并续期租约；
-//   - 非开发流量：若处于开发状态则返回 503 独占拒绝，否则转发到 background 进程。
+// routeRule 描述一条生效的路由规则（来自配置或内置回退）。
+type routeRule struct {
+	name  string
+	match config.RuleMatch
+	pool  string
+}
+
+// effectiveRoutingRules 返回生效的路由规则：配置了 routing.rules 时以配置为准；
+// 未配置时回退到内置规则（User-Agent 含 "GoClaw" → tool_call 池），保持既有行为。
+func (s *Server) effectiveRoutingRules() []routeRule {
+	if s.yamlCfg != nil && s.yamlCfg.Routing != nil && len(s.yamlCfg.Routing.Rules) > 0 {
+		rules := make([]routeRule, 0, len(s.yamlCfg.Routing.Rules))
+		for i := range s.yamlCfg.Routing.Rules {
+			rr := &s.yamlCfg.Routing.Rules[i]
+			name := strings.TrimSpace(rr.Name)
+			if name == "" {
+				name = fmt.Sprintf("rule-%d", i+1)
+			}
+			rules = append(rules, routeRule{
+				name:  name,
+				match: rr.Match,
+				pool:  strings.TrimSpace(rr.Pool),
+			})
+		}
+		return rules
+	}
+	return []routeRule{{
+		name:  "goclaw(builtin)",
+		match: config.RuleMatch{UserAgentContains: "GoClaw"},
+		pool:  "tool_call",
+	}}
+}
+
+// matchRoutingRule 按配置顺序返回首条命中的路由规则；无规则命中时返回 nil。
+func (s *Server) matchRoutingRule(r *http.Request) *routeRule {
+	rules := s.effectiveRoutingRules()
+	for i := range rules {
+		if ruleMatches(r, rules[i].match) {
+			return &rules[i]
+		}
+	}
+	return nil
+}
+
+// ruleMatches 判定请求是否命中规则的 match 条件：各条件 AND；header 内部任一请求头
+// 匹配即视为该条件命中。
+func ruleMatches(r *http.Request, m config.RuleMatch) bool {
+	if m.UserAgentContains == "" && len(m.Headers) == 0 {
+		return false
+	}
+	if m.UserAgentContains != "" &&
+		!strings.Contains(strings.ToLower(r.UserAgent()), strings.ToLower(m.UserAgentContains)) {
+		return false
+	}
+	if len(m.Headers) > 0 {
+		matched := false
+		for name, want := range m.Headers {
+			if v := strings.TrimSpace(r.Header.Get(name)); v != "" && v == want {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// selectBackend 选择本次请求的转发后端，返回首个转发候选与故障转移函数。启用进程调度时：
+//   - 开发(coding)流量：走本地 coding 进程（未就绪则 pending 等待，超时返回错误），并续期租约；
+//     单后端，不可故障转移；
+//   - 命中 routing 规则（或内置 GoClaw 规则）的请求：只从规则 pool 标签对应的后端子池
+//     （含本地 background 节点）选择，动态覆盖（X-Backend-URL / ?backend=）不生效；请求失败
+//     时自动转移到子池内下一个未尝试的后端；
+//   - 其余流量：统一落入下方代理池（backends.list + 本地 background 节点）。本地 background
+//     节点随就绪状态动态入池/出池，见 syncLocalBackendNode。请求失败时自动转移到池内下一个
+//     未尝试的后端。
 //
-// 未启用调度时退化为原有负载均衡逻辑。
-func (s *Server) selectBackend(w http.ResponseWriter, r *http.Request, ctx context.Context) (backend string, query string, bc *BackendConfig, err error) {
+// 动态指定后端（X-Backend-URL / ?backend=）与调度单后端路径没有故障转移目标。
+// 未启用调度时退化为纯负载均衡逻辑。
+func (s *Server) selectBackend(w http.ResponseWriter, r *http.Request, ctx context.Context) (*backendCandidate, string, func(map[string]bool) *backendCandidate, error) {
 	vals := r.URL.Query()
 
-	if s.scheduler != nil {
-		isCoding := s.scheduler.codingHeaderMatch(r.Header)
-		if isCoding {
-			s.scheduler.TouchCoding()
-			s.pushSchedEvent("coding_request", map[string]any{"method": r.Method, "path": r.URL.Path})
-			ready, rerr := s.scheduler.EnsureCoding(ctx)
-			if rerr != nil {
-				return "", "", nil, rerr
-			}
-			select {
-			case <-ready:
-			case <-ctx.Done():
-				return "", "", nil, fmt.Errorf("timed out waiting for coding model ready")
-			}
-			base := s.scheduler.ActiveBaseURL()
-			if base == "" {
-				return "", "", nil, fmt.Errorf("coding model not ready")
-			}
-			backend = strings.TrimRight(base, "/")
-			s.scheduler.TouchCoding()
-			return backend, vals.Encode(), nil, nil
+	if s.scheduler != nil && s.scheduler.CodingHeaderMatch(r.Header) {
+		s.scheduler.TouchCoding()
+		s.pushSchedEvent("coding_request", map[string]any{"method": r.Method, "path": r.URL.Path})
+		ready, rerr := s.scheduler.EnsureCoding(ctx)
+		if rerr != nil {
+			return nil, "", nil, rerr
 		}
-
-		// 非开发流量：开发状态下独占拒绝。
-		if s.scheduler.IsCodingActive() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"error":   "coding mode active",
-				"message": "model is exclusively held by coding traffic, retry later",
-			})
-			return "", "", nil, errScheduledRejected
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return nil, "", nil, fmt.Errorf("timed out waiting for coding model ready")
 		}
 		base := s.scheduler.ActiveBaseURL()
 		if base == "" {
-			return "", "", nil, fmt.Errorf("background model not ready")
+			return nil, "", nil, fmt.Errorf("coding model not ready")
 		}
-		return strings.TrimRight(base, "/"), vals.Encode(), nil, nil
+		s.scheduler.TouchCoding()
+		return &backendCandidate{url: strings.TrimRight(base, "/"), cfg: s.schedulerForwardBC()}, vals.Encode(), noFailover, nil
 	}
 
-	if s.cfg.AllowDynamicBackend {
+	var first *backendCandidate
+	var nextFn func(map[string]bool) *backendCandidate
+
+	if rule := s.matchRoutingRule(r); rule != nil {
+		// 命中路由规则：只从 pool 标签子池选点（含本地 background 节点），动态覆盖不生效。
+		// 请求失败时自动转移到子池内下一个未尝试的后端。
+		if s.balancer != nil {
+			if b := s.balancer.SelectFromTag(rule.pool); b != nil {
+				first = candidateOf(b)
+				pool := rule.pool
+				nextFn = func(exclude map[string]bool) *backendCandidate {
+					if b := s.balancer.SelectFromTagExcluding(pool, exclude); b != nil {
+						return candidateOf(b)
+					}
+					return nil
+				}
+			}
+		}
+		if first == nil {
+			return nil, "", nil, fmt.Errorf("routing rule %q matched but pool %q has no available backend", rule.name, rule.pool)
+		}
+	} else if s.cfg.AllowDynamicBackend {
 		if b := strings.TrimSpace(r.Header.Get("X-Backend-URL")); b != "" {
-			backend = strings.TrimRight(b, "/")
-			bc = nil
+			first = &backendCandidate{url: strings.TrimRight(b, "/")}
 		} else if b := strings.TrimSpace(vals.Get("backend")); b != "" {
-			backend = strings.TrimRight(b, "/")
 			vals.Del("backend")
-			bc = nil
+			first = &backendCandidate{url: strings.TrimRight(b, "/")}
 		} else if s.balancer != nil {
 			if b := s.balancer.Select(); b != nil {
-				backend = strings.TrimRight(b.URL, "/")
-				bc = b
+				first = candidateOf(b)
+				nextFn = s.nextBalancerCandidate
 			}
 		}
 	} else if s.balancer != nil {
 		if b := s.balancer.Select(); b != nil {
-			backend = strings.TrimRight(b.URL, "/")
-			bc = b
+			first = candidateOf(b)
+			nextFn = s.nextBalancerCandidate
 		}
 	}
 
-	if backend == "" {
-		return "", "", nil, fmt.Errorf("no backend selected: configure backends.list or provide a dynamic backend override")
+	if first == nil {
+		return nil, "", nil, fmt.Errorf("no backend selected: configure backends.list or provide a dynamic backend override")
 	}
 
-	if err = validateBackendURL(backend); err != nil {
-		return "", "", nil, fmt.Errorf("invalid backend URL: %w", err)
+	if err := config.ValidateBackendURL(first.url); err != nil {
+		return nil, "", nil, fmt.Errorf("invalid backend URL: %w", err)
 	}
-	return backend, vals.Encode(), bc, nil
+	if nextFn == nil {
+		nextFn = noFailover
+	}
+	return first, vals.Encode(), nextFn, nil
 }
 
-// errScheduledRejected 标记调度独占拒绝的请求（响应已在 selectBackend 内写出）。
-var errScheduledRejected = errors.New("scheduled request rejected")
+// backendCandidate 是单个转发目标（后端地址及其配置；动态指定后端时 cfg 为 nil）。
+type backendCandidate struct {
+	url string
+	cfg *config.BackendConfig
+}
 
+// backendAttempt 记录单个后端的请求结果，用于所有后端失败时把完整的故障转移过程
+// 按后端分组返回给客户端。
+type backendAttempt struct {
+	Name       string `json:"name,omitempty"`
+	URL        string `json:"url"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Body       string `json:"body,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// noFailover 表示没有故障转移目标（单后端或动态指定的后端）。
+var noFailover = func(map[string]bool) *backendCandidate { return nil }
+
+// candidateKey 返回故障转移时标记“已尝试”的键：池内后端用后端名（与 balancer 的
+// SelectExcluding 按名排除一致），动态指定的后端用地址（其不参与故障转移）。
+func candidateKey(c *backendCandidate) string {
+	if c.cfg != nil {
+		return c.cfg.Name
+	}
+	return c.url
+}
+
+// candidateName 返回后端名；动态指定的后端没有名字，返回空串。
+func candidateName(c *backendCandidate) string {
+	if c.cfg != nil {
+		return c.cfg.Name
+	}
+	return ""
+}
+
+// maxFailReportBytes 是“所有后端失败”报告中每个后端响应体捕获的字节上限。
+const maxFailReportBytes = 8 * 1024
+
+// readLimited 从 body 读取至多 cap 字节并返回截断标志（不关闭 body）。
+func readLimited(body io.Reader, cap int) ([]byte, bool) {
+	raw, _ := io.ReadAll(io.LimitReader(body, int64(cap)+1))
+	truncated := len(raw) > cap
+	if truncated {
+		raw = raw[:cap]
+	}
+	return raw, truncated
+}
+
+// recordRequest 保存请求原文并插入一条请求记录，指向实际转发（或最后尝试）的后端。
+func (s *Server) recordRequest(ctx context.Context, requestID string, started time.Time, r *http.Request, clientIP, trimmedQuery string, isStreaming bool, cand *backendCandidate, reqModel string, body []byte) {
+	reqRawPath, err := s.store.SaveRawPayload(requestID, "request", body)
+	if err != nil {
+		log.WithCtx(ctx).Infof("save request raw failed: %v", err)
+	}
+	if err := s.store.InsertRequest(model.RequestRecord{
+		ID:             requestID,
+		CreatedAt:      started.UTC(),
+		Method:         r.Method,
+		Path:           r.URL.Path,
+		Query:          trimmedQuery,
+		ClientIP:       clientIP,
+		BackendURL:     cand.url,
+		Model:          reqModel,
+		IsStreaming:    isStreaming,
+		RequestBytes:   int64(len(body)),
+		RequestRawPath: reqRawPath,
+		UserAgent:      r.UserAgent(),
+	}); err != nil {
+		log.WithCtx(ctx).Infof("insert request failed: %v", err)
+	}
+}
+
+// candidateOf 把后端配置转换为转发候选。
+func candidateOf(b *config.BackendConfig) *backendCandidate {
+	return &backendCandidate{url: strings.TrimRight(b.URL, "/"), cfg: b}
+}
+
+// nextBalancerCandidate 从全量池返回下一个未尝试过的后端（请求失败后的自动故障转移）。
+func (s *Server) nextBalancerCandidate(exclude map[string]bool) *backendCandidate {
+	if s.balancer == nil {
+		return nil
+	}
+	if b := s.balancer.SelectExcluding(exclude); b != nil {
+		return candidateOf(b)
+	}
+	return nil
+}
+
+// isStreamingResponse 判定响应是否按流式回传（请求声明 stream 或响应为 SSE）。
 func isStreamingResponse(resp *http.Response, reqStreaming bool) bool {
 	if reqStreaming {
 		return true
@@ -334,7 +553,9 @@ func isStreamingResponse(resp *http.Response, reqStreaming bool) bool {
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	return strings.Contains(ct, "text/event-stream")
 }
-func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, started time.Time) (copied int64, firstByteMs float64, err error) {
+
+// streamCopy 普通响应的流式转发：边读边写、边刷盘，同时限量采样到 capture。
+func streamCopy(w http.ResponseWriter, src io.Reader, capture *meta.LimitedBuffer, started time.Time) (copied int64, firstByteMs float64, err error) {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 32*1024)
 	seenFirst := false
@@ -367,7 +588,8 @@ func streamCopy(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, st
 	}
 }
 
-func streamCopySSE(w http.ResponseWriter, src io.Reader, capture *limitedBuffer, started time.Time) (copied int64, firstByteMs float64, chunks int64, err error) {
+// streamCopySSE 流式响应的逐行转发：额外统计 SSE data 块数量（排除 [DONE]）。
+func streamCopySSE(w http.ResponseWriter, src io.Reader, capture *meta.LimitedBuffer, started time.Time) (copied int64, firstByteMs float64, chunks int64, err error) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReader(src)
 	seenFirst := false
@@ -403,242 +625,4 @@ func streamCopySSE(w http.ResponseWriter, src io.Reader, capture *limitedBuffer,
 			return copied, firstByteMs, chunks, rerr
 		}
 	}
-}
-
-func parseResponseMeta(headers http.Header, body []byte) responseMeta {
-	var meta responseMeta
-	ct := headers.Get("Content-Type")
-	mediatype, _, _ := mime.ParseMediaType(ct)
-	if strings.Contains(mediatype, "json") {
-		return parseJSONResponseMeta(body)
-	}
-	if strings.Contains(mediatype, "text/event-stream") {
-		parseSSEResponseMeta(body, &meta)
-	}
-	return meta
-}
-
-func parseJSONResponseMeta(body []byte) responseMeta {
-	var meta responseMeta
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return meta
-	}
-	if v, ok := m["model"].(string); ok {
-		meta.Model = v
-	}
-
-	if usage, ok := m["usage"].(map[string]any); ok {
-		meta.PromptTokens = toInt64(usage["prompt_tokens"])
-		meta.CompletionTok = toInt64(usage["completion_tokens"])
-		meta.TotalTokens = toInt64(usage["total_tokens"])
-		if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-			meta.CachedPromptTokens = toInt64(details["cached_tokens"])
-		}
-	}
-	if timings, ok := m["timings"].(map[string]any); ok {
-		if meta.PromptTokens == 0 {
-			meta.PromptTokens = toInt64(timings["prompt_n"])
-		}
-		if meta.CompletionTok == 0 {
-			meta.CompletionTok = toInt64(timings["predicted_n"])
-		}
-		meta.PromptMs = toFloat64(timings["prompt_ms"])
-		meta.CompletionMs = toFloat64(timings["predicted_ms"])
-	}
-	if meta.PromptTokens == 0 {
-		meta.PromptTokens = toInt64(m["tokens_evaluated"])
-	}
-	if meta.CompletionTok == 0 {
-		meta.CompletionTok = toInt64(m["tokens_predicted"])
-	}
-	if meta.TotalTokens == 0 {
-		meta.TotalTokens = meta.PromptTokens + meta.CompletionTok
-	}
-	if meta.PromptMs == 0 {
-		meta.PromptMs = toFloat64(m["tokens_evaluated_ms"])
-	}
-	if meta.CompletionMs == 0 {
-		meta.CompletionMs = toFloat64(m["tokens_predicted_ms"])
-	}
-	return meta
-}
-
-func mergeResponseMeta(dst *responseMeta, src responseMeta) {
-	if src.Model != "" {
-		dst.Model = src.Model
-	}
-	if src.PromptTokens > 0 {
-		dst.PromptTokens = src.PromptTokens
-	}
-	if src.CachedPromptTokens > 0 {
-		dst.CachedPromptTokens = src.CachedPromptTokens
-	}
-	if src.CompletionTok > 0 {
-		dst.CompletionTok = src.CompletionTok
-	}
-	if src.TotalTokens > 0 {
-		dst.TotalTokens = src.TotalTokens
-	}
-	if src.PromptMs > 0 {
-		dst.PromptMs = src.PromptMs
-	}
-	if src.CompletionMs > 0 {
-		dst.CompletionMs = src.CompletionMs
-	}
-}
-
-func parseSSEResponseMeta(body []byte, meta *responseMeta) {
-	scanner := bufio.NewScanner(bytes.NewReader(body))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
-			continue
-		}
-		chunkMeta := parseJSONResponseMeta([]byte(payload))
-		mergeResponseMeta(meta, chunkMeta)
-	}
-	if meta.TotalTokens == 0 {
-		meta.TotalTokens = meta.PromptTokens + meta.CompletionTok
-	}
-}
-func detectRequestMeta(body []byte) (isStreaming bool, model string) {
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return false, ""
-	}
-	isStreaming, _ = m["stream"].(bool)
-	if v, ok := m["model"].(string); ok {
-		model = v
-	}
-	return
-}
-
-// rewriteModel replaces the "model" field in a JSON request body with the
-// backend's actual model ID. It returns the rewritten body and the new model
-// name. If the body is not valid JSON (or has no model field), the original
-// body is returned unchanged.
-func rewriteModel(body []byte, model string) ([]byte, string, error) {
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body, "", err
-	}
-	m["model"] = model
-	newBody, err := json.Marshal(m)
-	if err != nil {
-		return body, "", err
-	}
-	return newBody, model, nil
-}
-func (s *Server) backendMetricsLoop(ctx context.Context) {
-	ticker := time.NewTicker(s.cfg.PollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.pollBackendMetrics(ctx)
-		}
-	}
-}
-
-func (s *Server) pollBackendMetrics(ctx context.Context) {
-	// Collect all enabled backends (from the balancer list) to poll.
-	var urls []string
-	if s.balancer != nil {
-		for _, name := range s.balancer.Names() {
-			if b := s.balancer.GetBackendByName(name); b != nil {
-				urls = append(urls, strings.TrimRight(b.URL, "/"))
-			}
-		}
-	}
-	if len(urls) == 0 {
-		return
-	}
-
-	for _, u := range urls {
-		s.pollBackendMetricsURL(ctx, u)
-	}
-}
-
-func (s *Server) pollBackendMetricsURL(ctx context.Context, baseURL string) {
-	u := baseURL + "/metrics"
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return
-	}
-	metrics := parsePrometheusText(string(body))
-	if len(metrics) == 0 {
-		return
-	}
-	now := s.createdAtValue(time.Now().UTC())
-	_ = retryDBWrite(func() error {
-		tx := s.db.Begin()
-		if tx.Error != nil {
-			return tx.Error
-		}
-		for name, value := range metrics {
-			if err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, baseURL, name, value).Error; err != nil {
-				_ = tx.Rollback()
-				return err
-			}
-		}
-		return tx.Commit().Error
-	})
-}
-
-func parsePrometheusText(text string) map[string]float64 {
-	out := make(map[string]float64)
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		name := fields[0]
-		value, err := strconv.ParseFloat(fields[len(fields)-1], 64)
-		if err != nil {
-			continue
-		}
-		out[name] = value
-	}
-	return out
-}
-
-// normalizeCacheHit 在历史数据未记录缓存命中率时按 token 数补齐。
-func normalizeCacheHit(rec *RequestRecord) {
-	if rec.CacheHitPct == 0 && rec.PromptTokens > 0 && rec.CachedPromptTokens > 0 {
-		rec.CacheHitPct = float64(rec.CachedPromptTokens) / float64(rec.PromptTokens) * 100
-	}
-}
-
-func enrichRequestRates(rec RequestRecord) RequestRecord {
-	if rec.PromptMs > 0 {
-		rec.PromptTokPerSec = float64(rec.PromptTokens) / (rec.PromptMs / 1000.0)
-	}
-	if rec.CompletionMs > 0 {
-		rec.DecodeTokPerSec = float64(rec.CompletionTokens) / (rec.CompletionMs / 1000.0)
-	}
-	if rec.TotalMs > 0 {
-		rec.TotalTokPerSec = float64(rec.TotalTokens) / (rec.TotalMs / 1000.0)
-	}
-	return rec
 }

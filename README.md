@@ -1,194 +1,105 @@
 # llama_proxy
 
-[![Go](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![llama.cpp](https://img.shields.io/badge/llama.cpp-local%20LLM-111111)](https://github.com/ggml-org/llama.cpp)
-[![Streaming](https://img.shields.io/badge/SSE-streaming-1f6feb)](#what-it-does)
+[![SSE](https://img.shields.io/badge/SSE-streaming-1f6feb)](#web-面板)
 
-Proxy and inspect all traffic going through your local `llama.cpp` server.
+本地 `llama.cpp` / OpenAI 兼容推理服务器的轻量级反向代理 + 监控面板。
 
-Lightweight reverse proxy and dashboard for `llama.cpp` and OpenAI-compatible local inference servers.
+`llama_proxy` 部署在推理服务器前面：记录每一个请求与响应（含原始载荷）、测量 TTFT / 总耗时 / Token 吞吐，并提供一个实时刷新的 Web 面板。除纯转发外，还支持**进程调度模式**——由代理自动启停本地 `llama-server` 进程，按请求头区分开发（coding）流量与日常流量，并把本地 background 模型作为动态节点纳入代理池做负载均衡。
 
-It sits in front of your inference server, logs every request, stores raw payloads, measures latency and token throughput, and gives you a live web UI.
+![llama_proxy](./docs/logo.svg)
 
-## What This Is For
+## 截图
 
-`llama_proxy` is a tool for tracking **all requests to a local LLM** in a way that is easy to inspect, filter, and debug.
+仪表盘（中文界面）：
 
-It is useful when you want to:
+![仪表盘](./docs/1.png)
 
-- debug local LLM traffic
-- inspect prompts, streaming responses, timings, and token usage
-- understand how agents behave step by step
-- compare models, settings, and backends
-- review failures and slow requests without digging through raw logs
+高级筛选与请求列表：
 
-## Screenshot
+![请求列表](./docs/2.png)
 
-<!-- Replace this with a real PNG screenshot before publishing -->
-![Screenshot](./docs/screenshot.png)
+English UI：
 
-<!-- Inspector view -->
-![Inspector](./docs/screenshot-inspector.png)
+![English dashboard](./docs/3.png)
 
-## What It Does
+![English request tape](./docs/4.png)
 
-- Reverse-proxies requests to your `llama.cpp` backend
-- Captures request and response payloads
-- Stores request history in SQLite
-- Tracks:
-  - active connections
-  - TTFT
-  - total latency
-  - prompt/output token counts
-  - prompt/output tokens per second
-  - request/response sizes
-  - errors
-- Supports streaming and non-streaming responses
-- Includes a live web UI with filtering and request inspection
-- Cleans up old data automatically
+## 功能
 
-## Why It Is Useful
+- 反向代理转发到 `llama.cpp` / OpenAI 兼容后端，支持流式（SSE）与非流式响应
+- 记录每个请求的原始请求体 / 响应体（按日期 gzip 存储）
+- 指标：活跃连接、TTFT、总耗时、prompt/completion Token 数、Token 吞吐（prompt/s、generation/s）、缓存命中率、请求/响应大小、错误
+- 多后端加权负载均衡（wrr / swrr / wr / rr / random，基于 [fufuok/balancer](https://github.com/fufuok/balancer)）
+- 客户端特征路由规则（`routing`）：按 User-Agent / 请求头匹配，把请求固定到后端标签池并池内自动故障转移
+- 每后端 `model` 重写与 `api_key` 注入，客户端 key 与后端 key 相互隔离
+- 可选进程调度：自动启停本地 `llama-server`，按请求头识别 coding 流量，background 模型就绪时作为动态节点入池
+- Web 面板（中/英双语）：实时指标卡、进程调度状态、按后端统计、每日统计图、可过滤的请求列表与请求详情
+- SQLite（默认）或 PostgreSQL 存储，数据保留期自动清理
 
-Most local LLM setups tell you whether a request succeeded, but not **how** it behaved.
+## 路由模型
 
-This project is meant to answer questions like:
+不配置 `scheduling` 时是**纯转发模式**：未命中路由规则的请求在 `backends.list` 中按权重策略分发（路由规则见下文）。
 
-- What exactly did the client send?
-- What did the model return, including streaming output?
-- How many prompt and output tokens were used?
-- How fast was prompt ingestion vs output generation?
-- Which requests were slow, failed, or behaved unexpectedly?
-- What are my agents actually doing over time?
+配置 `scheduling` 后进入**进程调度模式**：
 
-## Who It Is For
+| 请求 | 条件 | 去向 |
+|---|---|---|
+| coding（请求头 `X-LLM-Purpose: coding` 完全匹配） | 任意时刻 | 本地 coding 进程（未启动时自动拉起并等待就绪） |
+| 非 coding | background 就绪 | 代理池 = `backends.list` + 本地 background 节点，按权重负载均衡 |
+| 非 coding | coding 进行中 / background 未就绪 / 进程崩溃 | 代理池 = `backends.list` |
+| 非 coding，带 `X-Backend-URL` 头或 `?backend=` 参数 | `backends.allow_dynamic: true` | 直连指定后端 |
 
-- people running `llama.cpp` locally
-- developers building agent workflows
-- anyone debugging prompts, tool calls, or request chains
-- self-hosters who want visibility without adding heavy infrastructure
+调度细节：
+
+- **coding 进程**：收到 coding 流量时由代理按 `scheduling.coding.command` 启动 `llama-server`，轮询 `readiness_url` 直到就绪；客户端请求期间代理注入该进程自己的 `api_key`。
+- **租约**：距最后一次 coding 流量超过 `scheduling.lease.coding_idle_timeout`（例 30m）后，代理优雅停掉 coding 进程并切回 background，避免大模型常驻占用显存。
+- **background 节点**：常驻运行（或由代理拉起）。就绪探测通过后以 `scheduling.background.weight`（缺省 1）作为名为 `local-background` 的动态节点加入代理池参与负载均衡；探测失败或进程意外退出时自动出池，恢复就绪后重新入池。
+- **切换**：停旧进程前按 `switch.drain_timeout` 优雅排空在途请求，`kill_timeout` 内未退出则强杀；新进程按 `startup_timeout` 等待就绪。
+
+### 路由规则（routing）
+
+两种模式下都可以配置 `routing.rules`，把特定客户端特征的请求固定到指定标签池：
+
+- 规则按配置顺序评估，**首条命中生效**；
+- 每条规则的 `match` 支持 `user_agent_contains`（忽略大小写的子串）与 `header`（任一请求头与配置值完全匹配），多条件同时配置时为 AND；
+- 命中后请求只从标签与 `pool` 匹配的后端中选择（`backends.list[].tags` 与 `tool_call: true` 的并集，本地 background 节点可用 `scheduling.background.tags` 携带标签），动态覆盖（`X-Backend-URL` / `?backend=`）不生效；请求失败时自动转移到同一标签池内下一个未尝试的后端；
+- 未配置 `routing` 时回退到内置规则：User-Agent 含 `GoClaw` → `tool_call` 池（与既有 GoClaw 路由行为一致）。
+
+```yaml
+routing:
+  rules:
+    - name: "goclaw"
+      match:
+        user_agent_contains: "GoClaw"
+      pool: "tool_call"
+    - name: "agent-x"            # 多条件 AND：UA 命中 且 任一 header 完全匹配
+      match:
+        user_agent_contains: "AgentX"
+        header:
+          X-Agent-Env: "prod"
+      pool: "fast"
+
+backends:
+  list:
+    - name: "gpu-server-1"
+      url: "http://gpu-server-1:8080"
+      tags: ["fast"]             # 加入 fast 标签池
+    - name: "gpu-server-2"
+      url: "http://gpu-server-2:8080"
+      tool_call: true            # 等价于 tags 含 "tool_call"
+```
 
 ## Quick Start
 
-### 1. Clone the repo
+### 方式一：Docker Compose（推荐）
 
-```bash
-git clone https://github.com/dannychirkov/llama.cpp-router-monitor
-cd llama-cpp-router-monitor
-```
+仓库已自带 `docker-compose.yml`（端口 9091，`./data` 持久化，`./config.yaml` 挂载）。
 
-### 2. Start it
-
-Create a `config.yaml` that points at your `llama.cpp` server:
-
-```yaml
-backends:
-  list:
-    - name: "backend-1"
-      url: "http://host.docker.internal:8080"
-      weight: 1
-      enabled: true
-```
-
-Then:
-
-```bash
-docker compose up -d --build
-```
-
-### 3. Open the UI
-
-```text
-http://localhost:9091/_proxy/ui
-```
-
-### 4. Point your client to the proxy
-
-Instead of sending requests directly to `llama.cpp`:
-
-- old: `http://localhost:8080`
-- new: `http://localhost:9091`
-
-## Use a Pre-built Docker Image (GitHub Container Registry)
-
-Every push to `main` and every `v*` tag triggers an automatic build that pushes
-a multi-arch image to **GHCR** (`ghcr.io/<owner>/llama.cpp-router-monitor`).
-
-Available tags:
-
-| Tag            | Description                              |
-|----------------|------------------------------------------|
-| `next`         | Latest build of the `main` branch        |
-| `sha-<commit>` | Exact build for a specific commit        |
-| `1.2.3`, `1.2` | Versioned releases (from `v1.2.3` tags)  |
-| `latest`       | Same as the most recent release `v*` tag |
-
-### 1. Pull and run
-
-```bash
-docker pull ghcr.io/<owner>/llama.cpp-router-monitor:next
-
-docker run -d --name llama-cpp-router-monitor \
-  -v $(pwd)/config.yaml:/app/config.yaml \
-  -v $(pwd)/data:/app/data \
-  -p 9091:9091 \
-  --restart unless-stopped \
-  ghcr.io/<owner>/llama.cpp-router-monitor:next
-```
-
-> The image is built with the frontend embedded — no separate `web/` needed.
-> The binary inside the image is `/app/`.
-
-### 2. Configure backends
-
-Point the proxy at your `llama.cpp` server in `config.yaml`. When running on the
-host from a container, use `host.docker.internal`:
-
-```yaml
-backends:
-  list:
-    - name: "backend-1"
-      url: "http://host.docker.internal:8080"
-      weight: 1
-      enabled: true
-```
-
-### 3. Open the UI
-
-```text
-http://localhost:9091/_proxy/ui
-```
-
-> The GHCR package is **private** by default after the first build. To pull it
-> from other machines, open the package settings on GitHub and set it to **Public**,
-> or authenticate with `docker login ghcr.io` using a token that has `read:packages`.
-
-## Build the Image Yourself
-
-Prefer building from source? The Dockerfile is multi-stage and self-contained
-(it builds the frontend and compiles an embedded binary):
-
-```bash
-# with docker compose
-docker compose up -d --build
-
-# or directly
-docker build -t llama-cpp-router-monitor .
-```
-
-> In China, builds may fail fetching Go modules / npm packages due to network.
-> To use a China mirror, pass build args (works with `docker compose build` too):
-
-```bash
-docker build \
-  --build-arg GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct \
-  -t llama-cpp-router-monitor .
-```
-
-## Minimal Configuration
-
-Backends are defined in `backends.list` (see [YAML Configuration](#yaml-configuration)). Minimal `config.yaml`:
+1. 准备 `config.yaml`（最小示例）：
 
 ```yaml
 server:
@@ -206,172 +117,276 @@ backends:
       enabled: true
 ```
 
-## Windows Autostart
-
-The container uses:
-
-```yaml
-restart: unless-stopped
-```
-
-So it comes back automatically when Docker starts.
-
-To start it with Windows:
-
-1. Open Docker Desktop
-2. Go to `Settings -> General`
-3. Enable `Start Docker Desktop when you sign in`
-
-## One-Line Install For Existing Docker Users
+2. 启动：
 
 ```bash
-git clone https://github.com/dannychirkov/llama.cpp-router-monitor && cd llama-cpp-router-monitor && docker compose up -d --build
+docker compose up -d --build
 ```
 
-## Runtime Model
-
-The proxy keeps your existing API flow:
+3. 打开面板：
 
 ```text
-client -> llama_proxy -> llama.cpp
+http://localhost:9091/_proxy/ui
 ```
 
-It does not replace your inference server. It only sits in front of it.
+4. 把客户端指向代理（而不是直接指向 `llama.cpp`）：
 
-## Privacy
+- 原来：`http://localhost:8080`
+- 现在：`http://localhost:9091`
 
-This project is designed for local use.
-
-- requests and responses are stored on your machine
-- SQLite and raw payload files stay in `./data`
-- nothing is sent anywhere unless you expose the service yourself
-
-## Dynamic Backend Override
-
-Requests are routed to backends defined in `backends.list` (weighted load balancing).
-
-You can override the backend per request (requires `allow_dynamic: true`) with:
-
-- header:
-
-```text
-X-Backend-URL: http://host.docker.internal:8081
-```
-
-- or query parameter:
-
-```text
-?backend=http://host.docker.internal:8081
-```
-
-## Data Storage
-
-Local data is stored in `./data`:
-
-- `proxy.db` - SQLite database
-- `raw/YYYY-MM-DD/*.gz` - raw request/response payloads
-
-The data is cleaned automatically after `retention_days`.
-
-If you want to keep everything indefinitely, set `retention_days: 0` in the YAML config:
-
-```yaml
-monitor:
-  retention_days: 0
-```
-
-`0` or any negative value disables automatic cleanup.
-
-## API Endpoints
-
-- `GET /health`
-- `GET /live`
-- `GET /stats?hours=24`
-- `GET /requests?limit=100&offset=0`
-- `GET /request/{id}`
-- `DELETE /request/{id}`
-- `GET /raw/{id}/request`
-- `GET /raw/{id}/response`
-- `GET /events`
-- `GET /backend-metrics?limit=200`
-- `GET /ui`
-- `GET /v1/models` — OpenAI-compatible model list, answered by the router itself (not forwarded)
-
-Supported request filters:
-
-- `q`
-- `path`
-- `model`
-- `method`
-- `status`
-- `time_from` / `time_to` — absolute time window (RFC3339, e.g. `2026-09-13T00:00:00Z`); when omitted, falls back to the `hours` parameter
-- `stream`
-- `errors_only`
-- `with_tokens`
-
-## Example Request
+### 方式二：本地构建运行
 
 ```bash
-curl http://localhost:9091/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"local-model","messages":[{"role":"user","content":"hi"}],"stream":false}'
+# 纯二进制（前端从 web/ 目录读取，部署需带上 web/）
+make build
+./bin/llama_proxy -f config.yaml
+
+# 或嵌入前端单文件
+make build-embed
+./bin/llama_proxy -f config.yaml
+
+# 快速开发
+go run . -f config.yaml
 ```
 
-## Configuration
+`-f` 缺省读取当前目录的 `config.yaml`。
 
-This proxy is configured exclusively via a YAML configuration file.
+### 方式三：GHCR 预构建镜像
 
-Backends are configured via `backends.list` in the YAML file.
+每次 push 到 `main` 及每个 `v*` tag 都会自动构建多架构镜像并推送到 **GHCR**（`ghcr.io/youcd/llama.cpp-router-monitor`）。
 
-### YAML Configuration
+| Tag | 说明 |
+|---|---|
+| `next` | `main` 分支最新构建 |
+| `sha-<commit>` | 指定 commit 的构建 |
+| `1.2.3`, `1.2` | 来自 `v1.2.3` 等 tag 的正式版本 |
+| `latest` | 最近一个 `v*` release |
 
-Pass the config file with `-f <path>` (default `config.yaml`).
+```bash
+docker pull ghcr.io/youcd/llama.cpp-router-monitor:next
+
+docker run -d --name llama-cpp-router-monitor \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/data:/app/data \
+  -p 9091:9091 \
+  --restart unless-stopped \
+  ghcr.io/youcd/llama.cpp-router-monitor:next
+```
+
+> 镜像已内嵌前端，无需单独的 `web/` 目录；容器内二进制位于 `/app/llama_proxy`。
+> GHCR 包默认私有，其他机器拉取请先在 GitHub 包设置中公开，或 `docker login ghcr.io` 使用带 `read:packages` 权限的 token。
+
+### 自行构建镜像
+
+Dockerfile 为多阶段自包含构建（构建前端 + 编译嵌入二进制）：
+
+```bash
+docker compose up -d --build
+# 或
+docker build -t llama-cpp-router-monitor .
+```
+
+> 国内构建拉取 Go 模块 / npm 包可能失败，可传入镜像参数（`docker compose build` 同样生效）：
+
+```bash
+docker build \
+  --build-arg GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct \
+  -t llama-cpp-router-monitor .
+```
+
+## 配置参考
+
+完整示例见 [config.example.yaml](./config.example.yaml)，最小配置只需 `server` + `backends.list`。
 
 ```yaml
 server:
   listen_addr: ":9091"
   data_dir: "./data"
+  # 面板 Host 白名单（忽略端口与大小写），留空不限制；不在列表内的 Host 访问面板返回 403
+  ui_allowed_hosts:
+    - "llm.youcd.online"
 
 database:
-  type: "sqlite"              # sqlite | postgresql
+  type: "sqlite"                # sqlite | postgresql
   sqlite:
     path: "proxy.db"
   postgresql:
-    dsn: "postgres://user:pass@localhost:5432/proxy?sslmode=disable"
+    dsn: "postgres://user:password@localhost:5432/proxy?sslmode=disable"
+    max_open_conns: 25
+    max_idle_conns: 5
+    conn_max_lifetime_seconds: 300
 
 backends:
-  allow_dynamic: true
-  strategy: "wrr"             # wrr | swrr | wr | rr | random
+  allow_dynamic: true           # 允许 X-Backend-URL / ?backend= 逐请求覆盖
+  strategy: "wrr"               # wrr | swrr | wr | rr | random
   list:
-    - name: "gpu-1"
+    - name: "gpu-server-1"
       url: "http://gpu-server-1:8080"
       weight: 50
       enabled: true
-      model: "qwen"           # 后端实际部署的模型 ID，转发时自动重写请求体的 model
-      api_key: "secret-1"     # 该后端的 API Key，自动注入 Authorization: Bearer <key>
-    - name: "gpu-2"
+      model: "qwen"             # 后端实际部署的模型 ID，转发时自动重写请求体 model 字段
+      api_key: "secret-1"       # 后端 API Key，转发时自动注入 Authorization: Bearer <key>
+      # tags: ["fast"]          # 可选：加入的路由标签池，routing 规则按 pool 标签选择该后端
+    - name: "gpu-server-2"
       url: "http://gpu-server-2:8080"
       weight: 30
       enabled: true
-      model: "deepseek"       # 后端实际部署的模型 ID
+      model: "deepseek"
       api_key: "secret-2"
 
+# 路由规则（可选）：把特定客户端特征的请求固定到指定标签池，首条命中生效；
+# 未配置时回退到内置规则：User-Agent 含 "GoClaw" → tool_call 池
+#routing:
+#  rules:
+#    - name: "goclaw"
+#      match:
+#        user_agent_contains: "GoClaw"
+#      pool: "tool_call"
+
 proxy:
-  api_key: "client-secret"    # 客户端访问 proxy 的 API Key（与后端 api_key 隔离）
-  retention_days: 14
-  max_request_bytes: 33554432
-  max_capture_bytes: 33554432
+  api_key: "client-secret"      # 客户端访问代理的 API Key（与后端 api_key 隔离），留空则不鉴权
+  retention_days: 14            # 数据保留天数，0 或负数表示不清理
+  max_request_bytes: 33554432   # 32MB
+  max_capture_bytes: 33554432   # 32MB
   request_timeout_seconds: 600
-  poll_backend_metrics: true
+  poll_backend_metrics: true    # 定期拉取后端 /metrics 存入历史
   poll_interval_seconds: 10
+  # 白名单：仅这些路径被转发记录，其余一律 404（精确或前缀匹配）；未配置时默认 OpenAI 兼容接口
+  record_paths:
+    - "/v1/chat/completions"
+    - "/v1/completions"
+    - "/v1/embeddings"
+
+# 进程调度（可选）：配置后启用 coding 流量识别 + 本地模型进程切换，未配置则保持纯转发模式
+scheduling:
+  coding:
+    # command 支持多行：每个参数一行，拼接为一行命令执行（块内不可用 # 注释）
+    command: >
+      /usr/local/bin/llama-server
+      -m /path/to/coding.gguf
+      --host 0.0.0.0 --port 8080 -c 8192
+    header:
+      "X-LLM-Purpose": "coding"   # 请求头与该值完全匹配即判定为 coding 流量
+    readiness_url: "http://127.0.0.1:8080/v1/models"  # 就绪探测地址（完全按此配置 GET）
+    api_key: "your-api-key"       # 模型进程自身的 API Key（对应 llama-server --api-key）
+    log_file: "./data/coding.log" # 可选：该进程 stdout/stderr 日志
+  background:
+    command: >
+      /usr/local/bin/llama-server
+      -m /path/to/background.gguf
+      --host 0.0.0.0 --port 8080 -c 8192
+    readiness_url: "http://127.0.0.1:8080/v1/models"
+    api_key: "your-api-key"
+    weight: 1   # 就绪后作为动态节点加入代理池的权重，与 backends.list 一起负载均衡，缺省 1
+    log_file: "./data/background.log"
+  lease:
+    coding_idle_timeout: 30m  # 距最后一次 coding 流量超过该时长即切回 background
+  switch:
+    drain_timeout: 10s        # 切换前优雅排空在途请求的等待上限
+    kill_timeout: 10s         # 停止旧进程的等待上限
+    startup_timeout: 120s     # 等待新模型加载就绪的上限
 ```
 
-- [Quick Start](config.quickstart.yaml) - minimal configuration
-- [Full Example](config.example.yaml) - all available options
+### API Key 隔离
 
-### PostgreSQL Database
+代理同时管理两套互不依赖的 key：
 
-This proxy uses SQLite by default. To use PostgreSQL, use the `database` section in the YAML file:
+```
+客户端 ── Bearer <client_key> ──► llama_proxy ── Bearer <backend_key> ──► 后端 LLM
+```
+
+- `proxy.api_key`：客户端访问代理的 key，配置后所有代理转发请求必须携带 `Authorization: Bearer <key>`，否则 401；留空则不做客户端鉴权。
+- `backends.list[].api_key` / `scheduling.*.api_key`：转发到对应后端时自动注入该后端的 key；未配置则客户端的 `Authorization` 头原样透传。
+- `backends.list[].model`：配置后转发前自动重写请求体中的 `model` 字段为该后端实际部署的模型 ID，客户端无需关心各后端模型名不一致的问题。
+
+### 逐请求后端覆盖
+
+`backends.allow_dynamic: true` 时，以下两种方式优先级高于负载均衡：
+
+```text
+X-Backend-URL: http://host.docker.internal:8081
+```
+
+```text
+?backend=http://host.docker.internal:8081
+```
+
+## Web 面板
+
+访问 `http://<host>:<port>/_proxy/ui`（中/英双语，右上角切换），通过 SSE 实时推送更新，支持自动刷新：
+
+- **实时指标卡**：活跃连接、每小时请求数、生成速度（token/s）、平均 TTFT、LLM 错误率、总请求数、总 Token 数
+- **进程调度面板**（调度模式）：当前进程（coding / background）、就绪状态、PID、服务地址、租约时长、剩余租约、已空闲时长
+- **按后端统计**：每个后端的请求量、平均 TTFT、TOKEN/S、错误率
+- **每日统计图**：每日 Token 用量（prompt/completion/total）、每日请求状态分布（200/4xx/5xx）、每日请求总数
+- **请求列表**：时间、路径、客户端（IP）、User-Agent、提供商、状态、模型、耗时（TTFT/总计）、Token（提示/补全）、缓存命中率、prompt/s；支持分页加载
+- **筛选**：状态码、时间范围（`time_from`/`time_to`）、路径、模型、后端、方法、流式/非流式、仅失败、有 Token、仅对话补全
+- **请求详情**：查看原始请求/响应载荷（raw）、删除记录
+
+## API 端点
+
+监控端点均位于 `/_proxy` 前缀下，其余路径按代理转发处理（`/v1/models` 由代理自身应答，不转发）。
+
+```text
+GET    /_proxy/                          服务信息与端点列表
+GET    /_proxy/health                    健康检查
+GET    /_proxy/scheduler                 调度器状态（未启用调度时 404）
+GET    /_proxy/live                      实时活跃连接数
+GET    /_proxy/stats?hours=24            时间窗口聚合统计
+GET    /_proxy/stats-by-backend?hours=24 按后端统计
+GET    /_proxy/daily-stats?days=30       每日统计
+GET    /_proxy/requests?limit=100&offset=0  请求列表
+GET    /_proxy/request/{id}              请求详情
+DELETE /_proxy/request/{id}              删除请求（含原始载荷）
+GET    /_proxy/raw/{id}/{request|response}  原始载荷
+GET    /_proxy/events                    事件流（SSE）
+GET    /_proxy/backend-metrics?limit=200 后端 /metrics 历史
+GET    /_proxy/models                    历史出现过的模型列表
+GET    /_proxy/backends                  后端列表
+GET    /_proxy/ui                        Web 面板
+```
+
+`/_proxy/requests`、`/_proxy/stats`、`/_proxy/stats-by-backend`、`/_proxy/daily-stats` 支持的过滤参数：
+
+| 参数 | 说明 |
+|---|---|
+| `q` | 关键词搜索（匹配 id/路径/query/客户端 IP/模型/错误信息） |
+| `path` / `model` / `backend` / `method` | 精确/前缀匹配过滤 |
+| `status` | 状态码过滤 |
+| `time_from` / `time_to` | 绝对时间窗口（RFC3339 或本地时间写法，如 `2026-09-13T00:00:00+08:00`）；省略时回退到 `hours`/`days` |
+| `stream` | `true`/`false` 过滤流式/非流式请求 |
+| `errors_only` | 仅失败请求 |
+| `with_tokens` | 仅带 Token 统计的请求 |
+| `chat_completions_only` | 仅 `/v1/chat/completions` 请求 |
+
+示例：
+
+```bash
+curl http://localhost:9091/_proxy/stats?hours=24
+curl "http://localhost:9091/_proxy/requests?limit=50&errors_only=true"
+```
+
+代理转发示例：
+
+```bash
+curl http://localhost:9091/v1/chat/completions \
+  -H "Authorization: Bearer client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8","messages":[{"role":"user","content":"hi"}],"stream":false}'
+```
+
+## 数据存储
+
+本地数据保存在 `server.data_dir`（默认 `./data`）：
+
+- `proxy.db` — SQLite 数据库（数据库类型与路径由 `database` 段控制）
+- `raw/YYYY-MM-DD/*.gz` — 按日期分组的原始请求/响应载荷
+
+超过 `proxy.retention_days` 的数据自动清理；`0` 或负数表示永久保留。
+
+### PostgreSQL
+
+默认使用 SQLite。切换 PostgreSQL：
 
 ```yaml
 database:
@@ -380,77 +395,25 @@ database:
     dsn: "postgres://user:password@localhost:5432/proxy?sslmode=disable"
 ```
 
-On startup the monitor:
-- **auto-creates the database itself** if it does not exist (connects to the `postgres` maintenance database and runs `CREATE DATABASE`; the DB user needs `CREATEDB` privilege)
-- creates all tables and indexes automatically (`CREATE TABLE IF NOT EXISTS`)
+启动时代理会：数据库不存在时自动创建（连接 `postgres` 维护库执行 `CREATE DATABASE`，需要 `CREATEDB` 权限）；自动建表与索引（`CREATE TABLE IF NOT EXISTS`）。
 
-### Multi-Backend Load Balancing
+## 隐私
 
-When `backends.list` is configured, requests are routed across enabled backends using a weighted strategy (using [`fufuok/balancer`](https://github.com/fufuok/balancer)):
+面向本地部署设计：请求与响应全部落在本机 `data_dir`，不配置外网暴露时数据不会离开你的机器。面板可通过 `server.ui_allowed_hosts` 限制可访问的 Host。
 
-- `wrr` - weighted round robin (default)
-- `swrr` - smooth weighted round robin
-- `wr` - weighted random
-- `rr` - round robin
-- `random` - random
+## 资源占用建议
 
-Per-backend options:
+- `proxy.max_capture_bytes` 保持在 8MB~32MB 之间
+- 不需要后端 metrics 历史时关闭 `proxy.poll_backend_metrics`
+- `/metrics` 无需频繁采集时调大 `proxy.poll_interval_seconds`
+- 保留期较高时留意 raw 载荷目录的磁盘占用
 
-- `model` - the model ID the backend actually serves. When set, the proxy rewrites the `model` field in the request body to this value before forwarding. Example: backend `gpu-server-1` serves `qwen`, `gpu-server-2` serves `deepseek` - each request is rewritten to the model of the chosen backend.
-- `api_key` - the backend's API key. When set, the proxy injects `Authorization: Bearer <api_key}` on the request to that backend. Without it, the client's `Authorization` header passes through unchanged.
+## 限制
 
-### 客户端 API Key（`proxy.api_key`）
-
-在 `proxy.api_key` 配置后，所有客户端请求需在 header 中携带 `Authorization: Bearer <key>`，否则返回 401。该 key 与后端 `api_key` 相互隔离，互不依赖。
-
-- 不配置（空值）→ 无客户端鉴权（兼容旧版行为）
-- 配置了 → 客户端必须携带正确 API Key
-
-**客户端请求示例：**
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer client-secret-2024" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.8","messages":[{"role":"user","content":"hi"}]}'
-```
-
-**代理内部隔离：**
-
-```
-客户端 ── Bearer <client_key> ──► llm_proxy ── Bearer <backend_key> ──► 后端 LLM
-```
-
-Per-request overrides still take priority over the balancer:
-
-- header `X-Backend-URL: http://other-server:8080`
-- query parameter `?backend=http://other-server:8080`
-
-## Resource Usage Notes
-
-To keep it lean:
-
-- keep `proxy.max_capture_bytes` reasonable, for example `8MB` to `32MB`
-- disable backend metrics polling if you do not need it: `proxy.poll_backend_metrics: false`
-- increase `proxy.poll_interval_seconds` if `/metrics` does not need frequent polling
-
-## Limitations
-
-- some token and timing fields depend on what your backend actually returns
-- raw payload capture can use noticeable disk space if retention is high
-- this is a lightweight local proxy, not a full observability platform
-
-## Roadmap
-
-- charts for latency and throughput
-- easier export of requests and metrics
-- optional auth for shared environments
-- better comparison across models and backends
+- Token 与部分计时字段依赖后端实际返回的内容
+- raw 载荷在长保留期下会占用可观磁盘空间
+- 定位是轻量级本地代理，不是完整的可观测性平台
 
 ## License
 
-MIT License.
-
-You can use, modify, and distribute this project with attribution.
-
-See [LICENSE](./LICENSE).
+MIT License，见 [LICENSE](./LICENSE)。

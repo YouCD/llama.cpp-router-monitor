@@ -11,6 +11,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"llama_proxy/internal/httpx"
 )
 
 //go:embed web
@@ -18,12 +20,16 @@ var webFS embed.FS
 
 // handleUI serves the frontend embedded into the binary.
 // Enabled by building with `go build -tags embedweb`.
-func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/_proxy")
+	if p == "" {
+		p = "/"
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if !s.uiHostAllowed(r) {
-		writeJSON(w, http.StatusForbidden, map[string]any{
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
 			"error":   "forbidden",
 			"message": "ui access not allowed for this host",
 		})
@@ -36,14 +42,14 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
 	} else if strings.HasPrefix(p, "/ui/") {
 		clean := path.Clean(strings.TrimPrefix(p, "/ui"))
 		if strings.Contains(clean, "..") {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
 			return
 		}
 		name = path.Join("web", clean)
 	} else if strings.HasPrefix(p, "/assets/") {
 		clean := path.Clean(p)
 		if strings.Contains(clean, "..") {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
 			return
 		}
 		name = path.Join("web", clean)

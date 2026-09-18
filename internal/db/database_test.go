@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"errors"
@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"llama_proxy/internal/config"
 )
 
 func TestParsePostgresKVURL(t *testing.T) {
@@ -103,5 +105,35 @@ func TestPgAdminDSNQuotesSpecialValue(t *testing.T) {
 	}
 	if !strings.Contains(dsn, "password='p w'") {
 		t.Fatalf("admin dsn should quote password with space: %q", dsn)
+	}
+}
+
+func TestDatabaseTypeDetection(t *testing.T) {
+	dataDir := t.TempDir()
+	sqlCfg := config.DatabaseConfig{Type: "sqlite", SQLite: config.SQLiteConfig{Path: "proxy.db"}}
+	database, err := NewDatabase(sqlCfg, dataDir, "debug")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer CloseDatabase(database)
+
+	if database.Dialector.Name() != "sqlite" {
+		t.Fatalf("sqlite type=%q", database.Dialector.Name())
+	}
+	if IsPostgresDB(database) {
+		t.Fatalf("sqlite reported as postgres")
+	}
+}
+
+func TestInitPostgreSQLDBSQL(t *testing.T) {
+	// Verify PostgreSQL DDL uses native types and no SQLite-only syntax.
+	all := strings.Join(pgDDLStatements, "\n")
+	for _, want := range []string{"TIMESTAMPTZ", "BOOLEAN", "BIGINT", "SERIAL", "DOUBLE PRECISION"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("pg DDL missing %q", want)
+		}
+	}
+	if strings.Contains(all, "AUTOINCREMENT") {
+		t.Fatalf("pg DDL must not use AUTOINCREMENT")
 	}
 }

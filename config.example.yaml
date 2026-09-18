@@ -28,6 +28,8 @@ backends:
       enabled: true
       model: "qwen"          # 该后端实际部署的模型 ID，转发时自动重写请求体的 model 字段
       api_key: "secret-1"    # 该后端的 API Key，转发时自动注入 Authorization: Bearer <key>
+      # tags: ["fast"]       # 可选：加入的路由标签池，routing 规则按 pool 标签选择后端
+      # tool_call: true      # 可选：该后端支持工具调用（等价于 tags 含 "tool_call"）
     - name: "gpu-server-2"
       url: "http://gpu-server-2:8080"
       weight: 30
@@ -38,6 +40,23 @@ backends:
       url: "http://cpu-server:8080"
       weight: 20
       enabled: true
+
+# 路由规则（可选）：按客户端特征把请求固定到指定标签池，规则按顺序评估、首条命中生效。
+# 命中规则的请求：只从 pool 标签对应的后端子池（tags 或 tool_call 命中该标签）中选择，
+# 动态覆盖（X-Backend-URL / ?backend=）不生效，请求失败时自动转移到子池内下一个后端。
+# 未配置时回退到内置规则：User-Agent 含 "GoClaw" → tool_call 池（保持既有行为）。
+#routing:
+#  rules:
+#    - name: "goclaw"                      # 规则名，仅用于日志与报错
+#      match:
+#        user_agent_contains: "GoClaw"     # User-Agent 包含该子串（忽略大小写）
+#      pool: "tool_call"                   # 只路由到携带 tool_call 标签的后端
+#    - name: "agent-x"                     # 多条件 AND：UA 命中 且 任一 header 完全匹配
+#      match:
+#        user_agent_contains: "AgentX"
+#        header:
+#          X-Agent-Env: "prod"
+#      pool: "fast"
 
 proxy:
   retention_days: 14
@@ -54,7 +73,8 @@ proxy:
     - "/v1/embeddings"
 
 # 进程调度（可选）：配置后启用"开发流量识别 + 模型进程切换"，未配置则保持纯转发模式。
-# 开启后代理会直接执行下方命令启动/切换 llama.cpp 模型进程，请求不再走 backends.list 负载均衡。
+# 开启后：开发(coding)流量转发到本地 coding 进程；非开发流量统一进入代理池
+# （backends.list + 本地 background 节点，后者就绪时入池参与负载均衡，未就绪时出池）。
 #scheduling:
 #  coding:
 #    # command 支持多行：每个参数一行，最终拼接为一行命令执行。注意块内不可用 # 注释。
@@ -64,9 +84,11 @@ proxy:
 #      --host 0.0.0.0 --port 8080 -c 8192
 #    header:
 #      "X-LLM-Purpose": "coding"   # 请求头与该值完全匹配即判定为开发流量
-#    # 就绪探测地址：完全按此配置发起 GET（不拼接路径）。若需鉴权请配 readiness_authorization。
+#    # 就绪探测地址：完全按此配置发起 GET（不拼接路径）。
 #    readiness_url: "http://127.0.0.1:8080/v1/models"
-#    readiness_authorization: "Bearer your-api-key"   # 可选：原样作为 Authorization 请求头
+#    # 模型进程自身的 API Key（对应 llama-server 的 --api-key）：
+#    # 就绪探测与代理转发均使用 Authorization: Bearer <key>，客户端 key 与后端 key 隔离
+#    api_key: "your-api-key"
 #    log_file: "./data/coding.log"     # 可选：该模型进程的 stdout/stderr 日志文件
 #  background:
 #    command: >
@@ -74,7 +96,9 @@ proxy:
 #      -m /path/to/background.gguf
 #      --host 0.0.0.0 --port 8080 -c 8192
 #    readiness_url: "http://127.0.0.1:8080/v1/models"
-#    readiness_authorization: "Bearer your-api-key"   # 可选：原样作为 Authorization 请求头
+#    api_key: "your-api-key"   # 模型进程自身的 API Key（对应 --api-key）
+#    weight: 1   # 就绪后作为后端节点加入代理池的权重（与 backends.list 一起负载均衡），未配置按 1
+#    tags: ["fast"]  # 可选：该节点入池后携带的路由标签（routing 规则的 pool 可与之对应）
 #    log_file: "./data/background.log" # 可选：该模型进程的 stdout/stderr 日志文件
 #  lease:
 #    # 距最后一次开发流量超过该时长即切回 background 模型

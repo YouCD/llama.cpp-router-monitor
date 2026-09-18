@@ -9,21 +9,48 @@
       :row-class-name="rowClassName"
       @row-click="onRowClick"
     >
-      <el-table-column :label="t('colTime')" min-width="138">
+      <el-table-column :label="t('colTime')" width="150" fixed="left">
         <template #default="{ row }">
           <div class="mono">{{ row._rel }}</div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colRequest')" min-width="200">
+      <el-table-column :label="t('colRequest')" min-width="120">
         <template #default="{ row }">
           <div class="req-line">
             <span :class="'method-badge ' + methodClass(row.method)">{{ row.method || '-' }}</span>
             <span class="mono req-path" :title="reqTitle(row)">{{ row.path || '-' }}</span>
-            <span class="cell-subtle req-ip">{{ row.client_ip || '' }}</span>
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colStatus')" width="76" align="center">
+      <el-table-column :label="t('colClient')" min-width="110">
+        <template #default="{ row }">
+          <span
+            v-if="row.client_ip"
+            class="mono client-cell"
+            :title="row.client_ip + ' · ' + t('clickToFilter')"
+            @click.stop="onClientIPClick(row)"
+          >{{ row.client_ip }}</span>
+          <span v-else class="cell-subtle">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('colUserAgent')" min-width="150">
+        <template #default="{ row }">
+          <span v-if="row.user_agent" class="mono ua-cell" :title="row.user_agent">{{ row.user_agent }}</span>
+          <span v-else class="cell-subtle">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('colBackend')" min-width="150">
+        <template #default="{ row }">
+          <span
+            v-if="row.backend_url"
+            class="mono backend-cell"
+            :title="row.backend_url + ' · ' + t('clickToFilter')"
+            @click.stop="onBackendClick(row)"
+          >{{ shortenBackendUrl(row.backend_url) }}</span>
+          <span v-else class="cell-subtle">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('colStatus')" width="64" align="center">
         <template #default="{ row }">
           <span :class="'status-tag ' + statusClass(row.status_code || 0)">
             {{ statusText(row) }}
@@ -43,7 +70,7 @@
           <span :class="latencyTone(row.first_byte_ms)">{{ fmtLatency(row.first_byte_ms, row.total_ms, t('live')) }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('colTokens')" min-width="100" align="right">
+      <el-table-column :label="t('colTokens')" min-width="150" align="right">
         <template #default="{ row }">
           <div class="mono">{{ fmtTokens(row.prompt_tokens, row.completion_tokens) }}</div>
         </template>
@@ -63,7 +90,7 @@
           <span :class="rateTone(row.decode_tok_per_sec || 0)">{{ fmtRate(row.decode_tok_per_sec || 0) }}</span>
         </template>
       </el-table-column>
-      <el-table-column width="84" fixed="right" align="center">
+      <el-table-column :label="t('colActions')" width="84" fixed="right" align="center">
         <template #default="{ row }">
           <div class="row-actions">
             <el-tooltip :content="t('copyRequest')" placement="top">
@@ -95,7 +122,7 @@ import { computed } from 'vue'
 import { CopyDocument, View } from '@element-plus/icons-vue'
 import { t } from '../i18n'
 import {
-  fmtNum, fmtRate, fmtPercent, fmtLatency, fmtTokens, shortQuery,
+  fmtNum, fmtRate, fmtPercent, fmtLatency, fmtTokens, shortQuery, shortenBackendUrl,
   isCompleted as completed, statusClass, latencyTone, rateTone, cacheTone, methodClass,
 } from '../utils'
 
@@ -105,7 +132,7 @@ const props = defineProps({
   loadingMore: { type: Boolean, default: false },
   pageSize: { type: Number, default: 100 },
 })
-const emit = defineEmits(['loadMore', 'select'])
+const emit = defineEmits(['loadMore', 'select', 'select-backend', 'select-client-ip'])
 
 const BREAK_MS = 30 * 60 * 1000
 
@@ -154,6 +181,12 @@ function rowClassName({ row }) {
 }
 function onRowClick(row) {
   if (completed(row)) emit('select', row)
+}
+function onBackendClick(row) {
+  if (row.backend_url) emit('select-backend', row.backend_url)
+}
+function onClientIPClick(row) {
+  if (row.client_ip) emit('select-client-ip', row.client_ip)
 }
 async function onCopy(row) {
   const q = row.query ? `?${row.query}` : ''

@@ -8,7 +8,7 @@
         :key="c.key"
       >
         <div class="label">{{ c.label }}</div>
-        <div class="value">
+        <div class="value" :title="c.exact" :class="{ 'value-sm': String(c.format(c.value)).length > 6 }">
           <AnimatedNumber :value="c.value" :format="c.format" :step="c.step || 0" />
         </div>
         <div class="foot" :title="c.foot">{{ c.foot }}</div>
@@ -21,7 +21,7 @@
 import { computed } from 'vue'
 import AnimatedNumber from './AnimatedNumber.vue'
 import { t } from '../i18n'
-import { fmtNum, fmtMs, fmtPctNum, errRateTone } from '../utils'
+import { fmtNum, fmtCompact, fmtDuration, fmtPctNum, errRateTone } from '../utils'
 
 const props = defineProps({
   stats: { type: Object, default: () => ({}) },
@@ -61,7 +61,7 @@ const groups = computed(() => {
     {
       title: t('groupQuality'),
       cards: [
-        { key: 'ttft', label: t('metricAvgTtft'), value: s.avg_first_byte_ms || 0, format: fmtMs, foot: t('metricFirstToken'), featured: true },
+        { key: 'ttft', label: t('metricAvgTtft'), value: s.avg_first_byte_ms || 0, format: fmtDuration, foot: t('metricFirstToken'), featured: true },
         { key: 'err', label: t('metricErrorRateLLM'), value: llmError, format: fmtPctNum, tone: llmTone, foot: errFoot },
       ],
     },
@@ -69,7 +69,7 @@ const groups = computed(() => {
       title: t('groupResource'),
       cards: [
         { key: 'total', label: t('metricTotalReq'), value: totalMatching, format: fmtNum, foot: windowLabel, step: 1 },
-        { key: 'tokens', label: t('metricTotalTok'), value: totalTokens, format: fmtNum, foot: windowLabel, step: 1 },
+        { key: 'tokens', label: t('metricTotalTok'), value: totalTokens, format: fmtCompact, exact: fmtNum(totalTokens), foot: windowLabel, step: 1 },
       ],
     },
   ]

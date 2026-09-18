@@ -1,289 +1,30 @@
 package main
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"llama_proxy/internal/model"
+	"llama_proxy/internal/store"
 )
-
-func TestParseResponseMetaJSON(t *testing.T) {
-	body := []byte(`{
-		"model":"llama-actual",
-		"usage":{"prompt_tokens":481,"completion_tokens":712,"total_tokens":1193,"prompt_tokens_details":{"cached_tokens":88}},
-		"timings":{"prompt_ms":120.5,"predicted_ms":356.25}
-	}`)
-	meta := parseResponseMeta(http.Header{"Content-Type": []string{"application/json"}}, body)
-	if meta.Model != "llama-actual" {
-		t.Fatalf("model=%q", meta.Model)
-	}
-	if meta.PromptTokens != 481 || meta.CompletionTok != 712 || meta.TotalTokens != 1193 {
-		t.Fatalf("unexpected tokens: %+v", meta)
-	}
-	if meta.CachedPromptTokens != 88 {
-		t.Fatalf("unexpected cached tokens: %+v", meta)
-	}
-	if meta.PromptMs != 120.5 || meta.CompletionMs != 356.25 {
-		t.Fatalf("unexpected timings: %+v", meta)
-	}
-}
-
-func TestParseResponseMetaSSE(t *testing.T) {
-	body := []byte(strings.Join([]string{
-		`data: {"model":"stream-model","choices":[{"delta":{"content":"hi"}}]}`,
-		`data: {"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46},"timings":{"prompt_ms":20,"predicted_ms":80}}`,
-		`data: [DONE]`,
-		"",
-	}, "\n"))
-	meta := parseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, body)
-	if meta.Model != "stream-model" {
-		t.Fatalf("model=%q", meta.Model)
-	}
-	if meta.PromptTokens != 12 || meta.CompletionTok != 34 || meta.TotalTokens != 46 {
-		t.Fatalf("unexpected tokens: %+v", meta)
-	}
-}
-
-func TestParseResponseMetaSSEKeepsLaterPromptTokens(t *testing.T) {
-	body := []byte(strings.Join([]string{
-		`data: {"model":"stream-model","timings":{"prompt_n":0,"predicted_n":0}}`,
-		`data: {"usage":{"prompt_tokens":19,"completion_tokens":712,"total_tokens":731,"prompt_tokens_details":{"cached_tokens":3}},"timings":{"prompt_n":19,"predicted_n":712,"prompt_ms":42,"predicted_ms":1337}}`,
-		`data: [DONE]`,
-		"",
-	}, "\n"))
-	meta := parseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, body)
-	if meta.Model != "stream-model" {
-		t.Fatalf("model=%q", meta.Model)
-	}
-	if meta.PromptTokens != 19 || meta.CompletionTok != 712 || meta.TotalTokens != 731 {
-		t.Fatalf("unexpected tokens: %+v", meta)
-	}
-	if meta.CachedPromptTokens != 3 {
-		t.Fatalf("unexpected cached tokens: %+v", meta)
-	}
-	if meta.PromptMs != 42 || meta.CompletionMs != 1337 {
-		t.Fatalf("unexpected timings: %+v", meta)
-	}
-}
-
-func TestParseResponseMetaLlamaCppFallbackFields(t *testing.T) {
-	body := []byte(`{
-		"model":"llama-fallback",
-		"tokens_evaluated": 77,
-		"tokens_predicted": 123,
-		"tokens_evaluated_ms": 910.5,
-		"tokens_predicted_ms": 2222.25
-	}`)
-	meta := parseResponseMeta(http.Header{"Content-Type": []string{"application/json; charset=utf-8"}}, body)
-	if meta.Model != "llama-fallback" {
-		t.Fatalf("model=%q", meta.Model)
-	}
-	if meta.PromptTokens != 77 || meta.CompletionTok != 123 || meta.TotalTokens != 200 {
-		t.Fatalf("unexpected tokens: %+v", meta)
-	}
-	if meta.PromptMs != 910.5 || meta.CompletionMs != 2222.25 {
-		t.Fatalf("unexpected timings: %+v", meta)
-	}
-}
-
-func TestHandleProxyNonStreamingLlamaCppJSON(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{
-			"model":"llama.cpp-actual",
-			"usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33},
-			"timings":{"prompt_ms":50,"predicted_ms":125},
-			"content":"ok"
-		}`)
-	}))
-	defer backend.Close()
-
-	svc, _, cleanup := newTestServer(t, backend.URL)
-	defer cleanup()
-	svc.cfg.RecordPaths = append(svc.cfg.RecordPaths, "/completion")
-
-	proxy := httptest.NewServer(svc)
-	defer proxy.Close()
-
-	resp, err := proxy.Client().Post(proxy.URL+"/completion", "application/json", strings.NewReader(`{"model":"request-model","prompt":"hi"}`))
-	if err != nil {
-		t.Fatalf("proxy post: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if !strings.Contains(string(body), `"llama.cpp-actual"`) {
-		t.Fatalf("unexpected response body: %s", string(body))
-	}
-
-	listResp, err := proxy.Client().Get(proxy.URL + "/_proxy/requests?limit=10")
-	if err != nil {
-		t.Fatalf("get requests: %v", err)
-	}
-	defer listResp.Body.Close()
-	var payload struct {
-		Items []RequestRecord `json:"items"`
-	}
-	if err := json.NewDecoder(listResp.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode requests: %v", err)
-	}
-	if len(payload.Items) == 0 {
-		t.Fatal("expected at least one request")
-	}
-	rec := payload.Items[0]
-	if rec.Model != "llama.cpp-actual" {
-		t.Fatalf("model=%q", rec.Model)
-	}
-	if rec.TotalTokens != 33 || rec.PromptTokens != 11 || rec.CompletionTokens != 22 {
-		t.Fatalf("unexpected tokens: %+v", rec)
-	}
-	if rec.ResponseRawPath == "" {
-		t.Fatal("expected response raw path")
-	}
-}
-
-func TestHandleProxyStreamingLifecycle(t *testing.T) {
-	backendStarted := make(chan struct{}, 1)
-	releaseBackend := make(chan struct{})
-
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		_, _ = io.WriteString(w, "data: {\"model\":\"backend-final\",\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n")
-		flusher.Flush()
-		select {
-		case backendStarted <- struct{}{}:
-		default:
-		}
-		<-releaseBackend
-		_, _ = io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30},\"timings\":{\"prompt_ms\":50,\"predicted_ms\":200}}\n\n")
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-		flusher.Flush()
-	}))
-	defer backend.Close()
-
-	svc, _, cleanup := newTestServer(t, backend.URL)
-	defer cleanup()
-
-	proxy := httptest.NewServer(svc)
-	defer proxy.Close()
-
-	client := proxy.Client()
-	reqBody := `{"model":"request-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`
-
-	reqDone := make(chan error, 1)
-	go func() {
-		resp, err := client.Post(proxy.URL+"/v1/chat/completions", "application/json", strings.NewReader(reqBody))
-		if err != nil {
-			reqDone <- err
-			return
-		}
-		defer resp.Body.Close()
-		_, err = io.ReadAll(resp.Body)
-		reqDone <- err
-	}()
-
-	select {
-	case <-backendStarted:
-	case <-time.After(3 * time.Second):
-		t.Fatal("backend request did not start")
-	}
-
-	var liveID string
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(proxy.URL + "/_proxy/requests?limit=10")
-		if err != nil {
-			t.Fatalf("load live requests: %v", err)
-		}
-		var payload struct {
-			Items []RequestRecord `json:"items"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			resp.Body.Close()
-			t.Fatalf("decode requests: %v", err)
-		}
-		resp.Body.Close()
-		for _, item := range payload.Items {
-			if item.Path == "/v1/chat/completions" {
-				if item.StatusCode != 0 {
-					t.Fatalf("expected in-flight status 0, got %d", item.StatusCode)
-				}
-				if item.ResponseRawPath != "" {
-					t.Fatalf("expected empty response path while inflight, got %q", item.ResponseRawPath)
-				}
-				liveID = item.ID
-				break
-			}
-		}
-		if liveID != "" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if liveID == "" {
-		t.Fatal("did not observe live request in monitor list")
-	}
-
-	close(releaseBackend)
-
-	select {
-	case err := <-reqDone:
-		if err != nil {
-			t.Fatalf("proxy request failed: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("proxy request did not finish")
-	}
-
-	resp, err := client.Get(proxy.URL + "/_proxy/request/" + liveID)
-	if err != nil {
-		t.Fatalf("load final request: %v", err)
-	}
-	defer resp.Body.Close()
-	var rec RequestRecord
-	if err := json.NewDecoder(resp.Body).Decode(&rec); err != nil {
-		t.Fatalf("decode final request: %v", err)
-	}
-	if rec.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d", rec.StatusCode)
-	}
-	if rec.Model != "backend-final" {
-		t.Fatalf("model=%q", rec.Model)
-	}
-	if rec.TotalTokens != 30 || rec.PromptTokens != 10 || rec.CompletionTokens != 20 {
-		t.Fatalf("unexpected tokens: %+v", rec)
-	}
-	if rec.ResponseRawPath == "" {
-		t.Fatal("expected response raw path after completion")
-	}
-}
 
 func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
 	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 
-	reqRaw, err := svc.saveRawPayload("req1", "request", []byte(`{"a":1}`))
+	reqRaw, err := svc.store.SaveRawPayload("req1", "request", []byte(`{"a":1}`))
 	if err != nil {
 		t.Fatalf("save request raw: %v", err)
 	}
-	respRaw, err := svc.saveRawPayload("req1", "response", []byte(`{"b":2}`))
+	respRaw, err := svc.store.SaveRawPayload("req1", "response", []byte(`{"b":2}`))
 	if err != nil {
 		t.Fatalf("save response raw: %v", err)
 	}
-	err = svc.insertRequest(RequestRecord{
+	err = svc.store.InsertRequest(model.RequestRecord{
 		ID:              "req1",
 		CreatedAt:       time.Now().UTC(),
 		Method:          http.MethodPost,
@@ -294,7 +35,7 @@ func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert request: %v", err)
 	}
-	err = svc.finishRequest("req1", RequestRecord{
+	err = svc.store.FinishRequest("req1", model.RequestRecord{
 		Model:           "m",
 		StatusCode:      http.StatusOK,
 		ResponseRawPath: respRaw,
@@ -303,11 +44,11 @@ func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
 		t.Fatalf("finish request: %v", err)
 	}
 
-	if err := svc.deleteRequestByID("req1"); err != nil {
+	if err := svc.store.DeleteRequestByID("req1"); err != nil {
 		t.Fatalf("delete request: %v", err)
 	}
 
-	if _, err := svc.getRequestByID("req1"); err == nil {
+	if _, err := svc.store.GetRequestByID("req1"); err == nil {
 		t.Fatal("expected deleted row to be missing")
 	}
 	if _, err := os.Stat(filepath.Join(svc.cfg.DataDir, reqRaw)); !os.IsNotExist(err) {
@@ -318,40 +59,12 @@ func TestDeleteRequestByIDRemovesRowAndRawFiles(t *testing.T) {
 	}
 }
 
-func TestHandleRawReturnsSavedPayload(t *testing.T) {
-	svc, _, cleanup := newTestServer(t, "http://example.invalid")
-	defer cleanup()
-
-	reqRaw, err := svc.saveRawPayload("req2", "request", []byte(`{"hello":"world"}`))
-	if err != nil {
-		t.Fatalf("save raw: %v", err)
-	}
-	if err := svc.insertRequest(RequestRecord{
-		ID:             "req2",
-		CreatedAt:      time.Now().UTC(),
-		Method:         http.MethodPost,
-		Path:           "/v1/chat/completions",
-		RequestRawPath: reqRaw,
-	}); err != nil {
-		t.Fatalf("insert request: %v", err)
-	}
-
-	rr := httptest.NewRecorder()
-	svc.handleRaw(rr, "/raw/req2/request")
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	if got := strings.TrimSpace(rr.Body.String()); got != `{"hello":"world"}` {
-		t.Fatalf("raw body=%q", got)
-	}
-}
-
 func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 	svc, _, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 
 	now := time.Now().UTC()
-	records := []RequestRecord{
+	records := []model.RequestRecord{
 		{
 			ID:               "recent-ok",
 			CreatedAt:        now.Add(-10 * time.Minute),
@@ -422,7 +135,7 @@ func TestGetStatsAggregatesRollingAndLifetime(t *testing.T) {
 		}
 	}
 
-	stats, err := svc.getStats(RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
+	stats, err := svc.store.GetStats(model.RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
@@ -457,7 +170,7 @@ func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{
 			ID:          "live",
 			CreatedAt:   now.Add(-2 * time.Minute),
@@ -480,7 +193,7 @@ func TestGetStatsIgnoresLiveRequestsInErrors(t *testing.T) {
 		}
 	}
 
-	stats, err := svc.getStats(RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
+	stats, err := svc.store.GetStats(model.RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
@@ -494,7 +207,7 @@ func TestGetRequestsWithTokensFilter(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{
 			ID:               "with-tokens",
 			CreatedAt:        now,
@@ -519,7 +232,7 @@ func TestGetRequestsWithTokensFilter(t *testing.T) {
 		}
 	}
 
-	items, err := svc.getRequests(20, 0, RequestFilter{WithTokens: true})
+	items, err := svc.store.GetRequests(20, 0, model.RequestFilter{WithTokens: true})
 	if err != nil {
 		t.Fatalf("get requests: %v", err)
 	}
@@ -536,7 +249,7 @@ func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{
 			ID:          "chat",
 			CreatedAt:   now,
@@ -567,7 +280,7 @@ func TestGetRequestsChatCompletionsOnlyFilter(t *testing.T) {
 		}
 	}
 
-	items, err := svc.getRequests(20, 0, RequestFilter{ChatCompletionsOnly: true})
+	items, err := svc.store.GetRequests(20, 0, model.RequestFilter{ChatCompletionsOnly: true})
 	if err != nil {
 		t.Fatalf("get requests: %v", err)
 	}
@@ -584,7 +297,7 @@ func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{
 			ID:         "m1",
 			CreatedAt:  now,
@@ -623,7 +336,7 @@ func TestGetModelsReturnsDistinctSortedValues(t *testing.T) {
 		}
 	}
 
-	items, err := svc.getModels()
+	items, err := svc.store.GetModels()
 	if err != nil {
 		t.Fatalf("get models: %v", err)
 	}
@@ -640,7 +353,7 @@ func TestCacheFieldsPersistThroughDB(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	if err := seedRequest(t, svc, RequestRecord{
+	if err := seedRequest(t, svc, model.RequestRecord{
 		ID:                 "cache-row",
 		CreatedAt:          now,
 		Method:             http.MethodPost,
@@ -655,7 +368,7 @@ func TestCacheFieldsPersistThroughDB(t *testing.T) {
 		t.Fatalf("seed request: %v", err)
 	}
 
-	rec, err := svc.getRequestByID("cache-row")
+	rec, err := svc.store.GetRequestByID("cache-row")
 	if err != nil {
 		t.Fatalf("get request: %v", err)
 	}
@@ -677,11 +390,11 @@ func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
 		`data: [DONE]`,
 		"",
 	}, "\n"))
-	respRaw, err := svc.saveRawPayload("repair-row", "response", body)
+	respRaw, err := svc.store.SaveRawPayload("repair-row", "response", body)
 	if err != nil {
 		t.Fatalf("save raw: %v", err)
 	}
-	if err := svc.insertRequest(RequestRecord{
+	if err := svc.store.InsertRequest(model.RequestRecord{
 		ID:             "repair-row",
 		CreatedAt:      time.Now().UTC().Add(-5 * time.Minute),
 		Method:         http.MethodPost,
@@ -694,11 +407,11 @@ func TestRepairStuckRequestsBackfillsCachedTokens(t *testing.T) {
 		t.Fatalf("insert request: %v", err)
 	}
 
-	if err := repairStuckRequests(svc.db, svc.cfg.DataDir); err != nil {
+	if err := svc.store.RepairStuckRequests(); err != nil {
 		t.Fatalf("repair stuck requests: %v", err)
 	}
 
-	rec, err := svc.getRequestByID("repair-row")
+	rec, err := svc.store.GetRequestByID("repair-row")
 	if err != nil {
 		t.Fatalf("get request: %v", err)
 	}
@@ -727,7 +440,7 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{
 			ID:               "stream-with-tokens",
 			CreatedAt:        now,
@@ -757,8 +470,8 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 	}
 
 	streamTrue := true
-	statsFilter := RequestFilter{Streaming: &streamTrue, WithTokens: true, Path: "/v1/chat/completions", TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()}
-	stats, err := svc.getStats(statsFilter)
+	statsFilter := model.RequestFilter{Streaming: &streamTrue, WithTokens: true, Path: "/v1/chat/completions", TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()}
+	stats, err := svc.store.GetStats(statsFilter)
 	if err != nil {
 		t.Fatalf("get stats: %v", err)
 	}
@@ -780,11 +493,13 @@ func TestGetStatsRespectsFilters(t *testing.T) {
 }
 
 func TestCleanupDisabledWhenRetentionNonPositive(t *testing.T) {
-	svc, _, cleanup := newTestServer(t, "http://example.invalid")
+	svc, database, cleanup := newTestServer(t, "http://example.invalid")
 	defer cleanup()
 
+	// retentionDays 在 store 构造时确定，按生产路径以 retention=0 重建 store。
 	svc.cfg.RetentionDays = 0
-	if err := seedRequest(t, svc, RequestRecord{
+	svc.store = store.New(database, svc.cfg.DataDir, svc.cfg.RetentionDays)
+	if err := seedRequest(t, svc, model.RequestRecord{
 		ID:         "old-record",
 		CreatedAt:  time.Now().UTC().AddDate(0, 0, -30),
 		Method:     http.MethodPost,
@@ -794,79 +509,11 @@ func TestCleanupDisabledWhenRetentionNonPositive(t *testing.T) {
 		t.Fatalf("seed request: %v", err)
 	}
 
-	svc.cleanup()
+	svc.store.Cleanup()
 
-	if _, err := svc.getRequestByID("old-record"); err != nil {
+	if _, err := svc.store.GetRequestByID("old-record"); err != nil {
 		t.Fatalf("expected old record to remain, got %v", err)
 	}
-}
-
-func newTestServer(t *testing.T, backendURL string) (*Server, Database, func()) {
-	t.Helper()
-
-	dataDir := t.TempDir()
-	sqlCfg := DatabaseConfig{
-		Type: "sqlite",
-		SQLite: SQLiteConfig{
-			Path: "proxy.db",
-		},
-	}
-	db, err := NewDatabase(sqlCfg, dataDir, "debug")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	if err := InitDB(db, "sqlite"); err != nil {
-		t.Fatalf("init db: %v", err)
-	}
-	if err := normalizeDB(db); err != nil {
-		t.Fatalf("normalize db: %v", err)
-	}
-
-	backends := []BackendConfig{
-		{Name: "test-backend", URL: backendURL, Weight: 1, Enabled: true},
-	}
-	svc := &Server{
-		cfg: Config{
-			ListenAddr:          ":0",
-			AllowDynamicBackend: true,
-			DataDir:             dataDir,
-			RetentionDays:       14,
-			MaxRequestBytes:     2 << 20,
-			MaxCaptureBytes:     2 << 20,
-			RequestTimeout:      15 * time.Second,
-			RecordPaths:         []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"},
-		},
-		db:       db,
-		balancer: NewBackendBalancer(backends, "wrr"),
-		client:   &http.Client{Timeout: 15 * time.Second},
-		hub:      NewEventHub(),
-	}
-
-	cleanup := func() {
-		_ = CloseDatabase(db)
-	}
-	return svc, db, cleanup
-}
-
-func seedRequest(t *testing.T, svc *Server, rec RequestRecord) error {
-	t.Helper()
-	if err := svc.insertRequest(RequestRecord{
-		ID:             rec.ID,
-		CreatedAt:      rec.CreatedAt,
-		Method:         rec.Method,
-		Path:           rec.Path,
-		Query:          rec.Query,
-		ClientIP:       rec.ClientIP,
-		BackendURL:     rec.BackendURL,
-		Model:          rec.Model,
-		IsStreaming:    rec.IsStreaming,
-		RequestBytes:   rec.RequestBytes,
-		RequestRawPath: rec.RequestRawPath,
-		UserAgent:      rec.UserAgent,
-	}); err != nil {
-		return err
-	}
-	return svc.finishRequest(rec.ID, rec)
 }
 
 func TestGetDailyStats(t *testing.T) {
@@ -878,7 +525,7 @@ func TestGetDailyStats(t *testing.T) {
 	day1 := now.AddDate(0, 0, -1)
 	day2 := now.AddDate(0, 0, -2)
 
-	records := []RequestRecord{
+	records := []model.RequestRecord{
 		// day2: 2 个请求，均为 200
 		{ID: "d2-1", CreatedAt: day2, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusOK, PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
 		{ID: "d2-2", CreatedAt: day2, Method: http.MethodPost, Path: "/v1/chat/completions", StatusCode: http.StatusOK, PromptTokens: 5, CompletionTokens: 5, TotalTokens: 10},
@@ -895,7 +542,7 @@ func TestGetDailyStats(t *testing.T) {
 		}
 	}
 
-	items, err := svc.getDailyStats(10, RequestFilter{})
+	items, err := svc.store.GetDailyStats(10, model.RequestFilter{})
 	if err != nil {
 		t.Fatalf("getDailyStats: %v", err)
 	}
@@ -958,7 +605,7 @@ func TestGetBackendsDistinct(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{ID: "b1-a", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK},
 		{ID: "b1-b", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK},
 		{ID: "b2", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-2:8080", StatusCode: http.StatusOK},
@@ -969,7 +616,7 @@ func TestGetBackendsDistinct(t *testing.T) {
 		}
 	}
 
-	backends, err := svc.getBackends()
+	backends, err := svc.store.GetBackends()
 	if err != nil {
 		t.Fatalf("getBackends: %v", err)
 	}
@@ -988,7 +635,7 @@ func TestGetStatsByBackend(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{ID: "s1", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions",
 			BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK,
 			PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, FirstByteMs: 10, TotalMs: 100, IsStreaming: true},
@@ -1004,7 +651,7 @@ func TestGetStatsByBackend(t *testing.T) {
 		}
 	}
 
-	items, err := svc.getStatsByBackend(RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
+	items, err := svc.store.GetStatsByBackend(model.RequestFilter{TimeFrom: now.Add(-24 * time.Hour), TimeTo: time.Now().UTC()})
 	if err != nil {
 		t.Fatalf("getStatsByBackend: %v", err)
 	}
@@ -1054,7 +701,7 @@ func TestGetRequestsBackendFilter(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC()
-	for _, rec := range []RequestRecord{
+	for _, rec := range []model.RequestRecord{
 		{ID: "f1", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-1:8080", StatusCode: http.StatusOK},
 		{ID: "f2", CreatedAt: now, Method: http.MethodPost, Path: "/v1/chat/completions", BackendURL: "http://gpu-2:8080", StatusCode: http.StatusOK},
 	} {
@@ -1063,8 +710,8 @@ func TestGetRequestsBackendFilter(t *testing.T) {
 		}
 	}
 
-	f := RequestFilter{Backend: "http://gpu-1:8080"}
-	recs, err := svc.getRequests(100, 0, f)
+	f := model.RequestFilter{Backend: "http://gpu-1:8080"}
+	recs, err := svc.store.GetRequests(100, 0, f)
 	if err != nil {
 		t.Fatalf("getRequests: %v", err)
 	}
@@ -1073,84 +720,5 @@ func TestGetRequestsBackendFilter(t *testing.T) {
 	}
 	if recs[0].BackendURL != "http://gpu-1:8080" {
 		t.Fatalf("backend=%q", recs[0].BackendURL)
-	}
-}
-
-func TestProxyRecordPaths(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
-	}))
-	defer backend.Close()
-
-	svc, _, cleanup := newTestServer(t, backend.URL)
-	defer cleanup()
-	svc.cfg.RecordPaths = []string{"/v1/chat/completions", "/v1/completions"}
-
-	proxy := httptest.NewServer(svc)
-	defer proxy.Close()
-
-	postJSON := func(path string) *http.Response {
-		resp, err := proxy.Client().Post(proxy.URL+path, "application/json",
-			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
-		if err != nil {
-			t.Fatalf("post %s: %v", path, err)
-		}
-		return resp
-	}
-
-	resp := postJSON("/v1/embeddings")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("embeddings status=%d want 404 (not in whitelist)", resp.StatusCode)
-	}
-
-	recs, err := svc.getRequests(100, 0, RequestFilter{})
-	if err != nil {
-		t.Fatalf("getRequests: %v", err)
-	}
-	if len(recs) != 0 {
-		t.Fatalf("whitelisted out path recorded: got %d", len(recs))
-	}
-
-	resp2 := postJSON("/v1/chat/completions")
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("chat status=%d", resp2.StatusCode)
-	}
-
-	recs2, err := svc.getRequests(100, 0, RequestFilter{})
-	if err != nil {
-		t.Fatalf("getRequests: %v", err)
-	}
-	if len(recs2) != 1 || recs2[0].Path != "/v1/chat/completions" {
-		t.Fatalf("expected whitelisted request recorded, got %+v", recs2)
-	}
-}
-
-func TestShouldRecordProxy(t *testing.T) {
-	svc, _, cleanup := newTestServer(t, "http://example.invalid")
-	defer cleanup()
-
-	// 默认白名单：仅 OpenAI 兼容路径被转发记录，其余一律 404
-	for _, p := range []string{"/v1/chat/completions", "/v1/completions", "/v1/embeddings"} {
-		if !svc.shouldRecordProxy(p) {
-			t.Fatalf("whitelisted path %s should record", p)
-		}
-	}
-	for _, p := range []string{"/favicon.ico", "/metrics", "/.well-known/openid-configuration", "/", "/v1/foo"} {
-		if svc.shouldRecordProxy(p) {
-			t.Fatalf("non-whitelisted path %s should not record", p)
-		}
-	}
-
-	// 自定义白名单覆盖默认
-	svc.cfg.RecordPaths = []string{"/v1/chat/completions"}
-	if !svc.shouldRecordProxy("/v1/chat/completions") {
-		t.Fatal("whitelisted path should record")
-	}
-	if svc.shouldRecordProxy("/v1/embeddings") {
-		t.Fatal("non-whitelisted path should not record")
 	}
 }

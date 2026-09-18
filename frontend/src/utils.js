@@ -1,3 +1,5 @@
+import { currentLang } from './i18n'
+
 export async function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
     try {
@@ -59,6 +61,31 @@ export function fmtRate(value) {
 export function fmtNum(value) {
   if (!Number.isFinite(value)) return '0'
   return new Intl.NumberFormat('en-US').format(value)
+}
+
+function trimTrailingZeros(n) {
+  // 整数部分越长，小数位越少，避免大数字符串过长导致卡片内换行
+  const intDigits = Math.abs(Math.floor(n)).toString().length
+  const decimals = intDigits >= 5 ? 0 : intDigits >= 4 ? 1 : 2
+  let s = n.toFixed(decimals)
+  if (decimals > 0 && s.includes('.')) s = s.replace(/\.?0+$/, '')
+  return s
+}
+
+// 人性化大数显示：中文用 万/亿，英文用 K/M/B；阈值以下保留千分位完整数字
+export function fmtCompact(value, lang) {
+  const v = Number.isFinite(value) ? Math.round(value) : 0
+  if (v < 0) return fmtNum(v)
+  const l = lang ?? currentLang.value
+  if (l === 'zh') {
+    if (v >= 1e8) return trimTrailingZeros(v / 1e8) + '亿'
+    if (v >= 1e4) return trimTrailingZeros(v / 1e4) + '万'
+    return fmtNum(v)
+  }
+  if (v >= 1e9) return trimTrailingZeros(v / 1e9) + 'B'
+  if (v >= 1e6) return trimTrailingZeros(v / 1e6) + 'M'
+  if (v >= 1e3) return trimTrailingZeros(v / 1e3) + 'K'
+  return fmtNum(v)
 }
 
 export function fmtPercent(value) {

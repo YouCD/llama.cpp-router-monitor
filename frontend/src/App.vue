@@ -53,6 +53,8 @@
         :page-size="pageSize"
         @load-more="loadMore"
         @select="openDetails"
+        @select-backend="onBackendSelect"
+        @select-client-ip="onClientIPSelect"
       />
 
       <RequestDrawer
@@ -110,7 +112,7 @@ const filterPanel = ref(null)
 
 const hasFilters = computed(() => Object.keys(filters).length > 0)
 
-// 总览/后端/每日趋势使用固定的默认窗口，不受时间筛选影响（时间筛选只作用于请求列表）
+// 总览/提供商/每日趋势使用固定的默认窗口，不受时间筛选影响（时间筛选只作用于请求列表）
 const timeWindow = computed(() => ({ secs: 3600, label: t('filterLast1h') }))
 
 const quickCounts = computed(() => {
@@ -165,7 +167,8 @@ async function loadStats() {
 async function loadRequests() {
   loadingMore.value = false
   try {
-    const data = await fetchRequests(items.value.length || pageSize, 0, { ...filters })
+    // 首页刷新恒用 pageSize：不能用 items.value.length（筛选后行数变少会限制取数上限）
+    const data = await fetchRequests(pageSize, 0, { ...filters })
     items.value = data.items || []
     hasMore.value = (data.items || []).length >= pageSize
     const rates = items.value
@@ -239,6 +242,14 @@ function onBackendSelect(url) {
     filterPanel.value.setBackend(url)
   }
   filters.backend = url
+  refreshAll().catch(() => {})
+}
+
+function onClientIPSelect(ip) {
+  if (filterPanel.value) {
+    filterPanel.value.setClientIP(ip)
+  }
+  filters.client_ip = ip
   refreshAll().catch(() => {})
 }
 

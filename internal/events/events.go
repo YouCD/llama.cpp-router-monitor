@@ -1,4 +1,5 @@
-package main
+// Package events 提供 SSE 事件广播中心。
+package events
 
 import (
 	"encoding/json"
@@ -10,7 +11,7 @@ type EventHub struct {
 	clients map[chan string]struct{}
 }
 
-func NewEventHub() *EventHub {
+func New() *EventHub {
 	return &EventHub{clients: map[chan string]struct{}{}}
 }
 

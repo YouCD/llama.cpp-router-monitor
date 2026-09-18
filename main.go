@@ -11,6 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	"llama_proxy/internal/balancer"
+	"llama_proxy/internal/config"
+	"llama_proxy/internal/db"
+	"llama_proxy/internal/events"
+	"llama_proxy/internal/scheduler"
+	"llama_proxy/internal/store"
+
 	"github.com/youcd/toolkit/log"
 )
 
@@ -25,41 +32,48 @@ func main() {
 
 	log.Init(&log.Config{Stdout: true})
 
-	yamlCfg, err := loadYAMLConfig(configPath)
+	yamlCfg, err := config.Load(configPath)
 	if err != nil {
 		log.WithCtx(nil).Fatalf("load yaml config %s: %v", configPath, err)
 	}
 
-	cfg := yamlCfg.toLegacyConfig()
+	cfg := yamlCfg.ToLegacy()
 	log.SetLogLevel(cfg.LogLevel)
-	if len(yamlCfg.getEnabledBackends()) == 0 && !yamlCfg.Backends.AllowDynamic {
+	if len(yamlCfg.Backends.List) == 0 && !yamlCfg.Backends.AllowDynamic && !yamlCfg.HasScheduling() {
 		log.WithCtx(nil).Fatal("no enabled backend in backends.list and dynamic backend override is disabled")
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.WithCtx(nil).Fatalf("mkdir data dir: %v", err)
 	}
 
-	db, err := NewDatabase(yamlCfg.Database, cfg.DataDir, cfg.LogLevel)
+	database, err := db.NewDatabase(yamlCfg.Database, cfg.DataDir, cfg.LogLevel)
 	if err != nil {
 		log.WithCtx(nil).Fatalf("open db: %v", err)
 	}
-	defer CloseDatabase(db)
+	defer db.CloseDatabase(database)
 
 	dbType := yamlCfg.Database.Type
-	if err := InitDB(db, dbType); err != nil {
+	if err := db.InitDB(database, dbType); err != nil {
 		log.WithCtx(nil).Fatalf("init db: %v", err)
 	}
-	if err := normalizeDB(db); err != nil {
+
+	st := store.New(database, cfg.DataDir, cfg.RetentionDays)
+	if err := st.Normalize(); err != nil {
 		log.WithCtx(nil).Fatalf("normalize db: %v", err)
 	}
-	if err := repairStuckRequests(db, cfg.DataDir); err != nil {
+	if err := st.RepairStuckRequests(); err != nil {
 		log.WithCtx(nil).Infof("repair stuck requests failed: %v", err)
 	}
 
-	var backendBalancer *BackendBalancer
-	if yamlCfg.hasWeightedBackends() {
-		backendBalancer = NewBackendBalancer(yamlCfg.getEnabledBackends(), yamlCfg.Backends.Strategy)
-		log.WithCtx(nil).Infof("load balancer initialized with strategy: %s, backends: %d", yamlCfg.Backends.Strategy, backendBalancer.GetEnabledCount())
+	// 调度模式下本地 background 进程会作为动态节点加入代理池，因此即使 backends.list 为空也要建 balancer。
+	var backendBalancer *balancer.Balancer
+	if yamlCfg.HasWeightedBackends() || yamlCfg.HasScheduling() {
+		backendBalancer = balancer.New(yamlCfg.Backends.List, yamlCfg.Backends.Strategy)
+		// 池初始化/变更（如本地 background 节点入池/出池）时打印各池成员、权重与 strategy。
+		backendBalancer.SetLogger(func(format string, args ...any) {
+			log.WithCtx(nil).Infof(format, args...)
+		})
+		backendBalancer.LogPools()
 	}
 
 	transport := &http.Transport{
@@ -74,20 +88,23 @@ func main() {
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		yamlCfg:  yamlCfg,
-		db:       db,
-		balancer: backendBalancer,
+		cfg:            cfg,
+		yamlCfg:        yamlCfg,
+		store:          st,
+		balancer:       backendBalancer,
+		staticBackends: yamlCfg.Backends.List,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   cfg.RequestTimeout,
 		},
-		hub: NewEventHub(),
+		hub: events.New(),
 	}
+	// 在途请求计数供 Store 的统计 active_connections 与调度器排空使用。
+	st.Active = func() int64 { return s.active.Load() }
 
 	// 装配进程调度子系统：仅在配置了 scheduling 时启用，否则保持纯转发。
-	if yamlCfg.hasScheduling() {
-		scheduler := NewScheduler(yamlCfg.Scheduling, yamlCfg.Scheduling.Lease.CodingIdleTimeout, yamlCfg.Scheduling.Switch, s.client)
+	if yamlCfg.HasScheduling() {
+		scheduler := scheduler.New(yamlCfg.Scheduling, yamlCfg.Scheduling.Lease.CodingIdleTimeout, yamlCfg.Scheduling.Switch, s.client)
 		scheduler.SetActiveCount(func() int64 { return s.active.Load() })
 		s.scheduler = scheduler
 	}
@@ -99,7 +116,7 @@ func main() {
 		log.WithCtx(ctx).Infof("process scheduler enabled: coding_idle_timeout=%s drain=%s kill=%s startup=%s",
 			yamlCfg.Scheduling.Lease.CodingIdleTimeout, yamlCfg.Scheduling.Switch.DrainTimeout, yamlCfg.Scheduling.Switch.KillTimeout, yamlCfg.Scheduling.Switch.StartupTimeout)
 	}
-	go s.cleanupLoop(ctx)
+	go st.CleanupLoop(ctx)
 	if cfg.PollBackendMetrics {
 		go s.backendMetricsLoop(ctx)
 	}
@@ -110,11 +127,12 @@ func main() {
 			}
 		}()
 		go s.scheduler.Loop(ctx)
+		go s.syncLocalBackendNodeLoop(ctx)
 	}
 
 	backendCount := 0
 	if s.balancer != nil {
-		backendCount = s.balancer.GetEnabledCount()
+		backendCount = s.balancer.Len()
 	}
 	log.WithCtx(ctx).Infof("llama_proxy listening on %s, backends=%d", cfg.ListenAddr, backendCount)
 

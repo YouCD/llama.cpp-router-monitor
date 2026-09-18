@@ -27,6 +27,10 @@
         <span class="mono">{{ shortenBackendUrl(request.backend_url) || '-' }}</span>
         <span class="dot">•</span>
         <span>{{ request.model || '-' }}</span>
+        <template v-if="request.user_agent">
+          <span class="dot">•</span>
+          <span class="mono" :title="request.user_agent">{{ request.user_agent }}</span>
+        </template>
       </div>
 
       <div v-if="request.query" class="head-query mono">

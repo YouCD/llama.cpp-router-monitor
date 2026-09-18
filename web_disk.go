@@ -6,15 +6,21 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+
+	"llama_proxy/internal/httpx"
 )
 
 // handleUI serves the frontend from the on-disk web/ directory.
 // Use `go build -tags embedweb` to embed the frontend into the binary instead.
-func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/_proxy")
+	if p == "" {
+		p = "/"
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 
 	if !s.uiHostAllowed(r) {
-		writeJSON(w, http.StatusForbidden, map[string]any{
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
 			"error":   "forbidden",
 			"message": "ui access not allowed for this host",
 		})
@@ -27,14 +33,14 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, p string) {
 	} else if strings.HasPrefix(p, "/ui/") {
 		clean := filepath.Clean(strings.TrimPrefix(p, "/ui"))
 		if strings.Contains(clean, "..") {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
 			return
 		}
 		webPath = filepath.Join("web", clean)
 	} else if strings.HasPrefix(p, "/assets/") {
 		clean := filepath.Clean(p)
 		if strings.Contains(clean, "..") {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid path"})
 			return
 		}
 		webPath = filepath.Join("web", clean)

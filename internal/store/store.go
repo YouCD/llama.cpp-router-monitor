@@ -1,4 +1,5 @@
-package main
+// Package store 封装请求持久化、原始报文存储与统计查询。
+package store
 
 import (
 	"compress/gzip"
@@ -13,23 +14,56 @@ import (
 	"strings"
 	"time"
 
+	"llama_proxy/internal/db"
+	"llama_proxy/internal/meta"
+	"llama_proxy/internal/model"
+
 	"github.com/youcd/toolkit/log"
 	"gorm.io/gorm"
 )
 
-func (s *Server) saveRawPayload(requestID string, kind string, data []byte) (string, error) {
+// Store 封装 GORM 句柄与数据目录上的持久化/统计逻辑。
+type Store struct {
+	db            db.Database
+	dataDir       string
+	retentionDays int
+	isPostgres    bool
+
+	// Active 返回当前在途请求数（用于统计的 active_connections）；nil 按 0 计。
+	Active func() int64
+}
+
+// New 基于数据库句柄与数据目录创建 Store。
+func New(database db.Database, dataDir string, retentionDays int) *Store {
+	return &Store{
+		db:            database,
+		dataDir:       dataDir,
+		retentionDays: retentionDays,
+		isPostgres:    db.IsPostgresDB(database),
+	}
+}
+
+// activeCount 返回在途请求数（Active 未注入时按 0 计）。
+func (st *Store) activeCount() int64 {
+	if st.Active != nil {
+		return st.Active()
+	}
+	return 0
+}
+
+func (st *Store) SaveRawPayload(requestID string, kind string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", nil
 	}
 	dateDir := time.Now().UTC().Format("2006-01-02")
 	relDir := filepath.Join("raw", dateDir)
-	fullDir := filepath.Join(s.cfg.DataDir, relDir)
+	fullDir := filepath.Join(st.dataDir, relDir)
 	if err := os.MkdirAll(fullDir, 0o755); err != nil {
 		return "", err
 	}
 	fileName := fmt.Sprintf("%s-%s.gz", requestID, kind)
 	relPath := filepath.Join(relDir, fileName)
-	fullPath := filepath.Join(s.cfg.DataDir, relPath)
+	fullPath := filepath.Join(st.dataDir, relPath)
 
 	f, err := os.Create(fullPath)
 	if err != nil {
@@ -48,7 +82,7 @@ func (s *Server) saveRawPayload(requestID string, kind string, data []byte) (str
 	return relPath, nil
 }
 
-func readGzipFile(path string) ([]byte, error) {
+func ReadGzipFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -61,7 +95,8 @@ func readGzipFile(path string) ([]byte, error) {
 	defer gr.Close()
 	return io.ReadAll(gr)
 }
-func normalizeDB(db Database) error {
+func (st *Store) Normalize() error {
+	db := st.db
 	return db.Exec(`UPDATE requests SET
 		query = COALESCE(query, ''),
 		client_ip = COALESCE(client_ip, ''),
@@ -82,45 +117,6 @@ func normalizeDB(db Database) error {
 			user_agent IS NULL`).Error
 }
 
-func retryDBWrite(op func() error) error {
-	var err error
-	for attempt := 0; attempt < 5; attempt++ {
-		if err = op(); err == nil {
-			return nil
-		}
-		if !isBusyError(err) {
-			return err
-		}
-		time.Sleep(time.Duration(40*(attempt+1)) * time.Millisecond)
-	}
-	return err
-}
-
-func isBusyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, pat := range []string{
-		"database is locked",
-		"sqlbusy",
-		"sqlite_busy",
-		"busy",
-		"deadlock detected",
-		"deadlock_detected",
-		"could not serialize access",
-		"serialization_failure",
-		"lock timeout",
-		"lock_timeout",
-		"database table is locked",
-	} {
-		if strings.Contains(msg, pat) {
-			return true
-		}
-	}
-	return false
-}
-
 func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
 	rawRoot := filepath.Join(dataDir, "raw")
 	entries, err := os.ReadDir(rawRoot)
@@ -139,9 +135,11 @@ func findRawPayloadPath(dataDir, requestID, kind string) (string, bool) {
 	}
 	return "", false
 }
-func repairStuckRequests(db Database, dataDir string) error {
-	var stuck []RequestRecord
-	if err := db.Raw(`SELECT
+func (st *Store) RepairStuckRequests() error {
+	dataDir := st.dataDir
+
+	var stuck []model.RequestRecord
+	if err := st.db.Raw(`SELECT
 		id, created_at, method, path, query, client_ip, backend_url, model,
 		is_streaming, status_code, error_text, request_bytes, response_bytes,
 		prompt_tokens, cached_prompt_tokens, cache_hit_pct, completion_tokens, total_tokens,
@@ -158,31 +156,31 @@ func repairStuckRequests(db Database, dataDir string) error {
 			continue
 		}
 		respAbs := filepath.Join(dataDir, respRel)
-		respBytes, err := readGzipFile(respAbs)
+		respBytes, err := ReadGzipFile(respAbs)
 		if err != nil {
 			continue
 		}
-		meta := parseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, respBytes)
-		if meta.Model != "" {
-			rec.Model = meta.Model
+		parsed := meta.ParseResponseMeta(http.Header{"Content-Type": []string{"text/event-stream"}}, respBytes)
+		if parsed.Model != "" {
+			rec.Model = parsed.Model
 		}
 		rec.StatusCode = http.StatusOK
 		rec.ResponseBytes = int64(len(respBytes))
-		rec.PromptTokens = meta.PromptTokens
-		rec.CachedPromptTokens = meta.CachedPromptTokens
-		if meta.PromptTokens > 0 && meta.CachedPromptTokens > 0 {
-			rec.CacheHitPct = float64(meta.CachedPromptTokens) / float64(meta.PromptTokens) * 100
+		rec.PromptTokens = parsed.PromptTokens
+		rec.CachedPromptTokens = parsed.CachedPromptTokens
+		if parsed.PromptTokens > 0 && parsed.CachedPromptTokens > 0 {
+			rec.CacheHitPct = float64(parsed.CachedPromptTokens) / float64(parsed.PromptTokens) * 100
 		}
-		rec.CompletionTokens = meta.CompletionTok
-		rec.TotalTokens = meta.TotalTokens
-		rec.PromptMs = meta.PromptMs
-		rec.CompletionMs = meta.CompletionMs
+		rec.CompletionTokens = parsed.CompletionTok
+		rec.TotalTokens = parsed.TotalTokens
+		rec.PromptMs = parsed.PromptMs
+		rec.CompletionMs = parsed.CompletionMs
 		if stat, statErr := os.Stat(respAbs); statErr == nil {
 			rec.TotalMs = float64(stat.ModTime().UTC().Sub(rec.CreatedAt.UTC()).Milliseconds())
 		}
 		rec.ResponseRawPath = respRel
-		if err := retryDBWrite(func() error {
-			return db.Exec(`UPDATE requests SET
+		if err := db.RetryWrite(func() error {
+			return st.db.Exec(`UPDATE requests SET
 				model = ?,
 				status_code = ?,
 				error_text = ?,
@@ -210,22 +208,22 @@ func repairStuckRequests(db Database, dataDir string) error {
 	}
 	return nil
 }
-func (s *Server) insertRequest(rec RequestRecord) error {
-	return retryDBWrite(func() error {
-		return s.db.Exec(`INSERT INTO requests (
+func (st *Store) InsertRequest(rec model.RequestRecord) error {
+	return db.RetryWrite(func() error {
+		return st.db.Exec(`INSERT INTO requests (
 			id, created_at, method, path, query, client_ip, backend_url, model,
 			is_streaming, request_bytes, request_raw_path, user_agent
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			rec.ID, s.createdAtValue(rec.CreatedAt), rec.Method, rec.Path, rec.Query,
+			rec.ID, st.createdAtValue(rec.CreatedAt), rec.Method, rec.Path, rec.Query,
 			rec.ClientIP, rec.BackendURL, rec.Model, rec.IsStreaming,
 			rec.RequestBytes, rec.RequestRawPath, rec.UserAgent,
 		).Error
 	})
 }
 
-func (s *Server) finishRequest(id string, rec RequestRecord) error {
-	return retryDBWrite(func() error {
-		return s.db.Exec(`UPDATE requests SET
+func (st *Store) FinishRequest(id string, rec model.RequestRecord) error {
+	return db.RetryWrite(func() error {
+		return st.db.Exec(`UPDATE requests SET
 			model = ?,
 			status_code = ?,
 			error_text = ?,
@@ -250,7 +248,7 @@ func (s *Server) finishRequest(id string, rec RequestRecord) error {
 	})
 }
 
-func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestRecord, error) {
+func (st *Store) GetRequests(limit int, offset int, f model.RequestFilter) ([]model.RequestRecord, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
@@ -266,37 +264,37 @@ func (s *Server) getRequests(limit int, offset int, f RequestFilter) ([]RequestR
 		FROM requests WHERE 1=1`
 	args := make([]any, 0, 16)
 
-	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
+	query, args = appendRequestFilterSQL(query, args, f, st.isPostgres)
 
 	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
-	out := make([]RequestRecord, 0, limit)
-	if err := s.db.Raw(query, args...).Scan(&out).Error; err != nil {
+	out := make([]model.RequestRecord, 0, limit)
+	if err := st.db.Raw(query, args...).Scan(&out).Error; err != nil {
 		return nil, err
 	}
 	for i := range out {
-		normalizeCacheHit(&out[i])
-		out[i] = enrichRequestRates(out[i])
+		meta.NormalizeCacheHit(&out[i])
+		out[i] = meta.EnrichRequestRates(out[i])
 	}
 	return out, nil
 }
 
-func (s *Server) getRequestByID(id string) (RequestRecord, error) {
-	var rec RequestRecord
-	err := s.db.Where("id = ?", id).Take(&rec).Error
+func (st *Store) GetRequestByID(id string) (model.RequestRecord, error) {
+	var rec model.RequestRecord
+	err := st.db.Where("id = ?", id).Take(&rec).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return rec, sql.ErrNoRows
 		}
 		return rec, err
 	}
-	normalizeCacheHit(&rec)
-	return enrichRequestRates(rec), nil
+	meta.NormalizeCacheHit(&rec)
+	return meta.EnrichRequestRates(rec), nil
 }
 
-func (s *Server) deleteRequestByID(id string) error {
-	rec, err := s.getRequestByID(id)
+func (st *Store) DeleteRequestByID(id string) error {
+	rec, err := st.GetRequestByID(id)
 	if err != nil {
 		return err
 	}
@@ -304,8 +302,8 @@ func (s *Server) deleteRequestByID(id string) error {
 		if rel == "" {
 			continue
 		}
-		fullPath := filepath.Clean(filepath.Join(s.cfg.DataDir, rel))
-		relCheck, relErr := filepath.Rel(s.cfg.DataDir, fullPath)
+		fullPath := filepath.Clean(filepath.Join(st.dataDir, rel))
+		relCheck, relErr := filepath.Rel(st.dataDir, fullPath)
 		if relErr != nil || strings.HasPrefix(relCheck, "..") {
 			return fmt.Errorf("refusing to delete path outside data dir")
 		}
@@ -314,8 +312,8 @@ func (s *Server) deleteRequestByID(id string) error {
 		}
 	}
 	var affected int64
-	err = retryDBWrite(func() error {
-		res := s.db.Exec(`DELETE FROM requests WHERE id = ?`, id)
+	err = db.RetryWrite(func() error {
+		res := st.db.Exec(`DELETE FROM requests WHERE id = ?`, id)
 		affected = res.RowsAffected
 		return res.Error
 	})
@@ -327,7 +325,7 @@ func (s *Server) deleteRequestByID(id string) error {
 	}
 	return nil
 }
-func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
+func (st *Store) GetStats(f model.RequestFilter) (map[string]any, error) {
 	from := f.TimeFrom.UTC()
 	to := f.TimeTo.UTC()
 	secs := to.Sub(from).Seconds()
@@ -336,7 +334,7 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 	}
 
 	var streamSumSQL = `COALESCE(SUM(is_streaming),0)`
-	if s.isPostgres() {
+	if st.isPostgres {
 		streamSumSQL = `COALESCE(SUM(CASE WHEN is_streaming THEN 1 ELSE 0 END),0)`
 	}
 
@@ -370,9 +368,9 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 		` + streamSumSQL + `
 		FROM requests WHERE 1=1`
 	args := []any{}
-	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
+	query, args = appendRequestFilterSQL(query, args, f, st.isPostgres)
 
-	row := s.db.Raw(query, args...).Row()
+	row := st.db.Raw(query, args...).Row()
 	if err := row.Scan(
 		&totalRequests,
 		&promptTokens,
@@ -389,7 +387,7 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 	); err != nil {
 		return nil, err
 	}
-	row = s.db.Raw(`SELECT
+	row = st.db.Raw(`SELECT
 		COUNT(*),
 		COALESCE(SUM(total_tokens),0)
 		FROM requests`).Row()
@@ -408,7 +406,7 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 
 	return map[string]any{
 		"hours":                    secs / 3600,
-		"active_connections":       s.active.Load(),
+		"active_connections":       st.activeCount(),
 		"total_requests":           totalRequests,
 		"total_prompt_tokens":      promptTokens,
 		"total_completion_tokens":  completionTokens,
@@ -433,9 +431,9 @@ func (s *Server) getStats(f RequestFilter) (map[string]any, error) {
 	}, nil
 }
 
-func (s *Server) getModels() ([]string, error) {
+func (st *Store) GetModels() ([]string, error) {
 	var query string
-	if s.isPostgres() {
+	if st.isPostgres {
 		query = `SELECT DISTINCT model FROM (
 			SELECT model FROM requests WHERE model IS NOT NULL AND TRIM(model) != ''
 			ORDER BY lower(model) ASC
@@ -446,13 +444,13 @@ func (s *Server) getModels() ([]string, error) {
 		WHERE model IS NOT NULL AND TRIM(model) != ''
 		ORDER BY model COLLATE NOCASE ASC`
 	}
-	return scanDistinctStrings(s.db, query, 64)
+	return scanDistinctStrings(st.db, query, 64)
 }
 
 // scanDistinctStrings 执行单列查询并返回去除空白后的非空字符串列表。
-func scanDistinctStrings(db Database, query string, hint int) ([]string, error) {
+func scanDistinctStrings(database db.Database, query string, hint int) ([]string, error) {
 	var raw []string
-	if err := db.Raw(query).Scan(&raw).Error; err != nil {
+	if err := database.Raw(query).Scan(&raw).Error; err != nil {
 		return nil, err
 	}
 	items := make([]string, 0, hint)
@@ -466,19 +464,19 @@ func scanDistinctStrings(db Database, query string, hint int) ([]string, error) 
 	return items, nil
 }
 
-func (s *Server) getBackends() ([]string, error) {
-	return scanDistinctStrings(s.db, `SELECT DISTINCT backend_url
+func (st *Store) GetBackends() ([]string, error) {
+	return scanDistinctStrings(st.db, `SELECT DISTINCT backend_url
 		FROM requests
 		WHERE backend_url IS NOT NULL AND TRIM(backend_url) != ''
 		ORDER BY backend_url ASC`, 16)
 }
 
-func (s *Server) getStatsByBackend(f RequestFilter) ([]map[string]any, error) {
+func (st *Store) GetStatsByBackend(f model.RequestFilter) ([]map[string]any, error) {
 	from := f.TimeFrom.UTC()
 	to := f.TimeTo.UTC()
 
 	var streamSumSQL = `COALESCE(SUM(is_streaming),0)`
-	if s.isPostgres() {
+	if st.isPostgres {
 		streamSumSQL = `COALESCE(SUM(CASE WHEN is_streaming THEN 1 ELSE 0 END),0)`
 	}
 
@@ -497,7 +495,7 @@ func (s *Server) getStatsByBackend(f RequestFilter) ([]map[string]any, error) {
 		GROUP BY backend_url
 		ORDER BY COUNT(*) DESC`
 
-	rows, err := s.db.Raw(query, filterTimeArg(from, s.isPostgres()), filterTimeArg(to, s.isPostgres())).Rows()
+	rows, err := st.db.Raw(query, filterTimeArg(from, st.isPostgres), filterTimeArg(to, st.isPostgres)).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -538,11 +536,11 @@ func (s *Server) getStatsByBackend(f RequestFilter) ([]map[string]any, error) {
 	return out, rows.Err()
 }
 
-func (s *Server) getBackendMetrics(limit int) ([]map[string]any, error) {
+func (st *Store) GetBackendMetrics(limit int) ([]map[string]any, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 200
 	}
-	rows, err := s.db.Raw(`SELECT created_at, backend_url, metric_name, metric_value
+	rows, err := st.db.Raw(`SELECT created_at, backend_url, metric_name, metric_value
 		FROM backend_metrics ORDER BY created_at DESC, id DESC LIMIT ?`, limit).Rows()
 	if err != nil {
 		return nil, err
@@ -567,44 +565,44 @@ func (s *Server) getBackendMetrics(limit int) ([]map[string]any, error) {
 	}
 	return out, rows.Err()
 }
-func (s *Server) cleanupLoop(ctx context.Context) {
+func (st *Store) CleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
-	s.cleanup()
+	st.Cleanup()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.cleanup()
+			st.Cleanup()
 		}
 	}
 }
 
-func (s *Server) cleanup() {
-	if s.cfg.RetentionDays <= 0 {
+func (st *Store) Cleanup() {
+	if st.retentionDays <= 0 {
 		return
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays)
-	cutoffVal := s.createdAtValue(cutoff)
-	if err := retryDBWrite(func() error {
-		return s.db.Exec(`DELETE FROM requests WHERE created_at < ?`, cutoffVal).Error
+	cutoff := time.Now().UTC().AddDate(0, 0, -st.retentionDays)
+	cutoffVal := st.createdAtValue(cutoff)
+	if err := db.RetryWrite(func() error {
+		return st.db.Exec(`DELETE FROM requests WHERE created_at < ?`, cutoffVal).Error
 	}); err != nil {
 		log.WithCtx(context.Background()).Infof("cleanup requests failed: %v", err)
 	}
-	if err := retryDBWrite(func() error {
-		return s.db.Exec(`DELETE FROM backend_metrics WHERE created_at < ?`, cutoffVal).Error
+	if err := db.RetryWrite(func() error {
+		return st.db.Exec(`DELETE FROM backend_metrics WHERE created_at < ?`, cutoffVal).Error
 	}); err != nil {
 		log.WithCtx(context.Background()).Infof("cleanup backend_metrics failed: %v", err)
 	}
 
-	rawRoot := filepath.Join(s.cfg.DataDir, "raw")
+	rawRoot := filepath.Join(st.dataDir, "raw")
 	entries, err := os.ReadDir(rawRoot)
 	if err != nil && !os.IsNotExist(err) {
 		log.WithCtx(context.Background()).Infof("cleanup raw read failed: %v", err)
 		return
 	}
-	cutoffDate := time.Now().UTC().AddDate(0, 0, -s.cfg.RetentionDays)
+	cutoffDate := time.Now().UTC().AddDate(0, 0, -st.retentionDays)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -629,7 +627,7 @@ func filterTimeArg(t time.Time, isPostgres bool) any {
 
 // effectiveWindow 返回筛选生效的 [from, to] 时间窗口。
 // 若 filter 指定了绝对时间（TimeFrom/TimeTo）则优先使用，否则回退到"最近 fallbackHours 小时"。
-func (s *Server) effectiveWindow(f RequestFilter, fallbackHours int) (time.Time, time.Time) {
+func (st *Store) EffectiveWindow(f model.RequestFilter, fallbackHours int) (time.Time, time.Time) {
 	now := time.Now().UTC()
 	from := now.Add(-time.Duration(fallbackHours) * time.Hour)
 	to := now
@@ -642,7 +640,7 @@ func (s *Server) effectiveWindow(f RequestFilter, fallbackHours int) (time.Time,
 	return from, to
 }
 
-func appendRequestFilterSQL(query string, args []any, f RequestFilter, isPostgres bool) (string, []any) {
+func appendRequestFilterSQL(query string, args []any, f model.RequestFilter, isPostgres bool) (string, []any) {
 	if f.ChatCompletionsOnly {
 		query += ` AND method = ? AND path = ?`
 		args = append(args, http.MethodPost, "/v1/chat/completions")
@@ -662,6 +660,10 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, isPostgre
 	if f.Backend != "" {
 		query += ` AND backend_url = ?`
 		args = append(args, f.Backend)
+	}
+	if f.ClientIP != "" {
+		query += ` AND client_ip LIKE ?`
+		args = append(args, "%"+f.ClientIP+"%")
 	}
 	if f.StatusCode > 0 {
 		query += ` AND status_code = ?`
@@ -697,7 +699,7 @@ func appendRequestFilterSQL(query string, args []any, f RequestFilter, isPostgre
 
 // getDailyStats 按天聚合请求数与 token 用量。
 // 返回按日期升序排列的每日统计，覆盖最近 days 天。
-func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, error) {
+func (st *Store) GetDailyStats(days int, f model.RequestFilter) ([]map[string]any, error) {
 	if days <= 0 {
 		days = 30
 	}
@@ -708,7 +710,7 @@ func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, err
 	// 存储层 created_at 为 UTC（Postgres 为 TIMESTAMPTZ，SQLite 为 UTC 墙壁时间）。
 	// 按 +8 时区分组日期，使 08:00 UTC 之前的请求归属到本地日期，避免跨天错位。
 	dateExpr := `date(created_at, '+8 hours')`
-	if s.isPostgres() {
+	if st.isPostgres {
 		dateExpr = `to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')`
 	}
 
@@ -735,12 +737,12 @@ func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, err
 		FROM requests
 		WHERE 1=1`
 	args := []any{}
-	query, args = appendRequestFilterSQL(query, args, f, s.isPostgres())
+	query, args = appendRequestFilterSQL(query, args, f, st.isPostgres)
 	query += `
 		GROUP BY ` + dateExpr + `
 		ORDER BY ` + dateExpr + ` ASC`
 
-	rows, err := s.db.Raw(query, args...).Rows()
+	rows, err := st.db.Raw(query, args...).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -770,3 +772,35 @@ func (s *Server) getDailyStats(days int, f RequestFilter) ([]map[string]any, err
 	}
 	return out, nil
 }
+
+// createdAtValue 按数据库类型生成 created_at 参数值。
+func (st *Store) createdAtValue(t time.Time) any {
+	if st.isPostgres {
+		return t.UTC()
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// RecordBackendMetrics 将抓取自后端 /metrics 的指标写入 backend_metrics 表。
+func (st *Store) RecordBackendMetrics(baseURL string, metrics map[string]float64) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+	now := st.createdAtValue(time.Now().UTC())
+	return db.RetryWrite(func() error {
+		tx := st.db.Begin()
+		if tx.Error != nil {
+			return tx.Error
+		}
+		for name, value := range metrics {
+			if err := tx.Exec(`INSERT INTO backend_metrics (created_at, backend_url, metric_name, metric_value) VALUES (?, ?, ?, ?)`, now, baseURL, name, value).Error; err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+		return tx.Commit().Error
+	})
+}
+
+// DataDir 返回原始报文与本地数据目录。
+func (st *Store) DataDir() string { return st.dataDir }

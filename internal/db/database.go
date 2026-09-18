@@ -1,4 +1,5 @@
-package main
+// Package db 封装 GORM 数据库初始化、DSN 处理与写入重试。
+package db
 
 import (
 	"database/sql"
@@ -14,6 +15,8 @@ import (
 	"github.com/youcd/toolkit/log"
 	gormpostgres "gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"llama_proxy/internal/config"
+
 	"gorm.io/gorm/logger"
 )
 
@@ -30,11 +33,11 @@ func CloseDatabase(db Database) error {
 }
 
 // isPostgresDB 判断 GORM 句柄底层是否为 PostgreSQL。
-func isPostgresDB(db Database) bool {
+func IsPostgresDB(db Database) bool {
 	return db.Dialector.Name() == "postgres"
 }
 
-func NewDatabase(cfg DatabaseConfig, dataDir, logLevel string) (Database, error) {
+func NewDatabase(cfg config.DatabaseConfig, dataDir, logLevel string) (Database, error) {
 	switch strings.ToLower(cfg.Type) {
 	case "postgresql", "postgres", "pg":
 		return newPostgreSQLDatabase(cfg.PostgreSQL)
@@ -45,7 +48,7 @@ func NewDatabase(cfg DatabaseConfig, dataDir, logLevel string) (Database, error)
 	}
 }
 
-func newSQLiteDatabase(cfg SQLiteConfig, dataDir, logLevel string) (Database, error) {
+func newSQLiteDatabase(cfg config.SQLiteConfig, dataDir, logLevel string) (Database, error) {
 	dbPath := cfg.Path
 	if !strings.HasPrefix(dbPath, "/") {
 		dbPath = dataDir + "/" + dbPath
@@ -79,7 +82,7 @@ func newSQLiteDatabase(cfg SQLiteConfig, dataDir, logLevel string) (Database, er
 	return db, nil
 }
 
-func newPostgreSQLDatabase(cfg PostgreSQLConfig) (Database, error) {
+func newPostgreSQLDatabase(cfg config.PostgreSQLConfig) (Database, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("postgresql DSN is required")
 	}
@@ -406,4 +409,44 @@ func InitDB(db Database, dbType string) error {
 	default:
 		return initSQLiteDB(db)
 	}
+}
+
+// RetryWrite 对 SQLite/Postgres 的 busy/deadlock 类错误做有限次退避重试。
+func RetryWrite(op func() error) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = op(); err == nil {
+			return nil
+		}
+		if !isBusyError(err) {
+			return err
+		}
+		time.Sleep(time.Duration(40*(attempt+1)) * time.Millisecond)
+	}
+	return err
+}
+
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, pat := range []string{
+		"database is locked",
+		"sqlbusy",
+		"sqlite_busy",
+		"busy",
+		"deadlock detected",
+		"deadlock_detected",
+		"could not serialize access",
+		"serialization_failure",
+		"lock timeout",
+		"lock_timeout",
+		"database table is locked",
+	} {
+		if strings.Contains(msg, pat) {
+			return true
+		}
+	}
+	return false
 }

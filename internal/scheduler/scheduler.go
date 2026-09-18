@@ -1,4 +1,5 @@
-package main
+// Package scheduler 负责按开发流量拉起/切换 llama.cpp 模型进程。
+package scheduler
 
 import (
 	"context"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"llama_proxy/internal/config"
+
 	"github.com/youcd/toolkit/log"
 )
 
@@ -23,9 +26,9 @@ const (
 // Scheduler 负责根据 opencode 的开发流量启动/切换 llama.cpp 模型进程。
 // 仅在配置了 scheduling 时由 main 装配启用；未启用时为 nil，代理退化为纯转发。
 type Scheduler struct {
-	cfg    *SchedulingConfig
+	cfg    *config.SchedulingConfig
 	lease  time.Duration
-	sw     SwitchConfig
+	sw     config.SwitchConfig
 	client *http.Client
 
 	// activeCount 返回当前在途请求数，用于切换时的优雅排空。
@@ -49,7 +52,7 @@ type Scheduler struct {
 }
 
 // NewScheduler 基于调度配置创建一个调度器。默认日志走全局 log。
-func NewScheduler(cfg *SchedulingConfig, lease time.Duration, sw SwitchConfig, client *http.Client) *Scheduler {
+func New(cfg *config.SchedulingConfig, lease time.Duration, sw config.SwitchConfig, client *http.Client) *Scheduler {
 	s := &Scheduler{
 		cfg:    cfg,
 		lease:  lease,
@@ -87,7 +90,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	s.started = true
 	s.mu.Unlock()
-	if _, err := s.ensureTarget(ctx, modeBackground, s.cfg.Background.Command, s.cfg.Background.ReadinessURL, s.cfg.Background.ReadinessAuthorization, s.cfg.Background.LogFile); err != nil {
+	if _, err := s.ensureTarget(ctx, modeBackground, s.cfg.Background.Command, s.cfg.Background.ReadinessURL, s.cfg.Background.APIKey, s.cfg.Background.LogFile); err != nil {
 		return fmt.Errorf("initial background start: %w", err)
 	}
 	return nil
@@ -108,9 +111,9 @@ func (s *Scheduler) Shutdown() {
 	}
 }
 
-// codingHeaderMatch 判定一个请求是否为开发(coding)流量。
+// CodingHeaderMatch 判定一个请求是否为开发(coding)流量。
 // 任一配置的 header 名称存在且其值与配置值完全匹配即为开发流量。
-func (s *Scheduler) codingHeaderMatch(h http.Header) bool {
+func (s *Scheduler) CodingHeaderMatch(h http.Header) bool {
 	for name, want := range s.cfg.Coding.Header {
 		if v := strings.TrimSpace(h.Get(name)); v != "" && v == want {
 			return true
@@ -137,7 +140,7 @@ func (s *Scheduler) EnsureCoding(ctx context.Context) (chan struct{}, error) {
 	}
 	s.mu.Unlock()
 
-	ready, err := s.ensureTarget(ctx, modeCoding, s.cfg.Coding.Command, s.cfg.Coding.ReadinessURL, s.cfg.Coding.ReadinessAuthorization, s.cfg.Coding.LogFile)
+	ready, err := s.ensureTarget(ctx, modeCoding, s.cfg.Coding.Command, s.cfg.Coding.ReadinessURL, s.cfg.Coding.APIKey, s.cfg.Coding.LogFile)
 	return ready, err
 }
 
@@ -175,6 +178,31 @@ func (s *Scheduler) ActiveBaseURL() string {
 	return apiBaseFromReadiness(s.cfg.Background.ReadinessURL)
 }
 
+// ActiveAPIKey 返回当前已就绪模式进程自身的 API Key，供代理转发时覆盖 Authorization，
+// 使客户端 key 与后端 key 隔离。未配置或当前无就绪进程时返回空串。
+func (s *Scheduler) ActiveAPIKey() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.readyOK {
+		return ""
+	}
+	if s.mode == modeCoding {
+		return s.cfg.Coding.APIKey
+	}
+	return s.cfg.Background.APIKey
+}
+
+// BackgroundReady 报告 background 进程当前是否就绪、可作为代理池中的后端节点，
+// 就绪时返回对应的转发基址（含 /v1 前缀）。coding 模式或未就绪时 ok 为 false。
+func (s *Scheduler) BackgroundReady() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mode == modeBackground && s.readyOK {
+		return apiBaseFromReadiness(s.cfg.Background.ReadinessURL), true
+	}
+	return "", false
+}
+
 // apiBaseFromReadiness 从就绪探测地址推导 llama-server API 基址（scheme://host:port/v1）。
 // readiness_url 可能带任意路径（如 /health、/v1/models），仅取其 origin 部分并拼上 /v1，
 // 避免路径后缀污染转发地址。解析失败时返回空串。
@@ -208,7 +236,7 @@ func (s *Scheduler) Loop(ctx context.Context) {
 			s.mu.Unlock()
 			if idle {
 				s.infof("coding idle timeout reached, switching to background")
-				_, _ = s.ensureTarget(context.Background(), modeBackground, s.cfg.Background.Command, s.cfg.Background.ReadinessURL, s.cfg.Background.ReadinessAuthorization, s.cfg.Background.LogFile)
+				_, _ = s.ensureTarget(context.Background(), modeBackground, s.cfg.Background.Command, s.cfg.Background.ReadinessURL, s.cfg.Background.APIKey, s.cfg.Background.LogFile)
 			}
 		}
 	}
@@ -217,7 +245,7 @@ func (s *Scheduler) Loop(ctx context.Context) {
 // ensureTarget 将当前进程切换到 target 模式并等待就绪。
 // 通过 switchMu 串行化整个切换过程（含 drain/停止旧进程/等待就绪），
 // 防止并发切换互相覆盖 readyCh 导致等待者永久阻塞。
-func (s *Scheduler) ensureTarget(ctx context.Context, target, command, readinessURL, readinessAuth, logFile string) (chan struct{}, error) {
+func (s *Scheduler) ensureTarget(ctx context.Context, target, command, readinessURL, apiKey, logFile string) (chan struct{}, error) {
 	// 串行化切换：同一时刻只允许一个切换在执行，避免并发 ensureTarget 覆盖 readyCh。
 	s.switchMu.Lock()
 	defer s.switchMu.Unlock()
@@ -277,7 +305,7 @@ func (s *Scheduler) ensureTarget(ctx context.Context, target, command, readiness
 	}
 
 	// 等待就绪。
-	if err := s.waitReady(ctx, readinessURL, readinessAuth, s.sw.StartupTimeout); err != nil {
+	if err := s.waitReady(ctx, readinessURL, apiKey, s.sw.StartupTimeout); err != nil {
 		s.infof("%s ready probe failed (will reconcile later): %v", target, err)
 		s.mu.Lock()
 		s.readyOK = false
@@ -330,13 +358,13 @@ func (s *Scheduler) reconcileReady() {
 	}
 	mode := s.mode
 	ch := s.readyCh
-	var baseURL, auth string
+	var baseURL, apiKey string
 	if mode == modeCoding {
 		baseURL = s.cfg.Coding.ReadinessURL
-		auth = s.cfg.Coding.ReadinessAuthorization
+		apiKey = s.cfg.Coding.APIKey
 	} else {
 		baseURL = s.cfg.Background.ReadinessURL
-		auth = s.cfg.Background.ReadinessAuthorization
+		apiKey = s.cfg.Background.APIKey
 	}
 	s.mu.Unlock()
 
@@ -345,7 +373,7 @@ func (s *Scheduler) reconcileReady() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if s.probeReady(ctx, baseURL, auth) {
+	if s.probeReady(ctx, baseURL, apiKey) {
 		s.mu.Lock()
 		if !s.readyOK {
 			s.readyOK = true
@@ -415,13 +443,19 @@ func (s *Scheduler) stopProcess() {
 	s.infof("stopped previous process")
 }
 
-// reap 回收已退出的子进程，防止僵尸进程。
+// reap 回收已退出的子进程，防止僵尸进程。进程意外退出时清除就绪标记，
+// 使本地 background 节点及时退出代理池（正常切换时 stopProcess 已置 s.cmd=nil，不会误清）。
 func (s *Scheduler) reap(cmd *exec.Cmd) {
 	_ = cmd.Wait()
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.readyOK = false
+	}
+	s.mu.Unlock()
 }
 
 // waitReady 轮询配置的 readinessURL 本身，直到成功或超时。
-func (s *Scheduler) waitReady(ctx context.Context, baseURL, authorization string, timeout time.Duration) error {
+func (s *Scheduler) waitReady(ctx context.Context, baseURL, apiKey string, timeout time.Duration) error {
 	if baseURL == "" {
 		return fmt.Errorf("readiness_url is empty")
 	}
@@ -430,7 +464,7 @@ func (s *Scheduler) waitReady(ctx context.Context, baseURL, authorization string
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if s.probeReady(probeCtx, baseURL, authorization) {
+		if s.probeReady(probeCtx, baseURL, apiKey) {
 			return nil
 		}
 		select {
@@ -441,7 +475,7 @@ func (s *Scheduler) waitReady(ctx context.Context, baseURL, authorization string
 	}
 }
 
-func (s *Scheduler) probeReady(ctx context.Context, url, authorization string) bool {
+func (s *Scheduler) probeReady(ctx context.Context, url, apiKey string) bool {
 	if s.probe != nil {
 		return s.probe(ctx, url)
 	}
@@ -449,8 +483,8 @@ func (s *Scheduler) probeReady(ctx context.Context, url, authorization string) b
 	if err != nil {
 		return false
 	}
-	if authorization != "" {
-		req.Header.Set("Authorization", authorization)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -465,4 +499,24 @@ func (s *Scheduler) getReadyCh() chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.readyCh
+}
+
+// Snapshot 为调度器内部状态的只读快照，供监控面板展示。
+type Snapshot struct {
+	Mode         string
+	Ready        bool
+	LastCodingAt time.Time
+	PID          int
+	Lease        time.Duration
+}
+
+// Snapshot 返回当前调度器状态快照。
+func (s *Scheduler) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := Snapshot{Mode: s.mode, Ready: s.readyOK, LastCodingAt: s.lastCodingAt, Lease: s.lease}
+	if s.cmd != nil && s.cmd.Process != nil {
+		snap.PID = s.cmd.Process.Pid
+	}
+	return snap
 }

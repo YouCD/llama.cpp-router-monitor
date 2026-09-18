@@ -22,6 +22,7 @@ import { LineChart, BarChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { t } from '../i18n'
+import { fmtCompact } from '../utils'
 
 echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -69,7 +70,7 @@ function render() {
 function renderToken(dates, items, labels) {
   if (!tokenChart) return
   tokenChart.setOption({
-    tooltip: { trigger: 'axis' },
+    tooltip: { trigger: 'axis', valueFormatter: (v) => fmtCompact(v) },
     legend: {
       data: [labels.promptTokens, labels.completionTokens, labels.totalTokens],
       bottom: 0,

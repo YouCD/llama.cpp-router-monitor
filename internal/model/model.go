@@ -1,45 +1,8 @@
-package main
+// Package model 定义请求记录、过滤条件与响应元数据等共享领域模型。
+package model
 
-import (
-	"bytes"
-	"context"
-	"net/http"
-	"sync"
-	"sync/atomic"
-	"time"
-)
+import "time"
 
-type Config struct {
-	ListenAddr          string
-	AllowDynamicBackend bool
-	DataDir             string
-	RetentionDays       int
-	MaxRequestBytes     int64
-	MaxCaptureBytes     int64
-	RequestTimeout      time.Duration
-	PollBackendMetrics  bool
-	PollInterval        time.Duration
-	RecordPaths         []string
-	APIKey              string   // 客户端访问 proxy 的 API Key，空值则不鉴权
-	UIAllowedHosts      []string // 允许访问 /_proxy/ui 的 Host 白名单，空则不限制
-	LogLevel            string
-}
-
-type Server struct {
-	cfg       Config
-	yamlCfg   *YAMLConfig
-	db        Database
-	balancer  *BackendBalancer
-	scheduler *Scheduler
-	client    *http.Client
-	hub       *EventHub
-	active    atomic.Int64
-
-	sseMu       sync.Mutex
-	sseCancels  map[context.Context]context.CancelFunc
-	schedMu     sync.RWMutex
-	schedEvents []map[string]any
-}
 type RequestRecord struct {
 	ID                 string    `json:"id"`
 	CreatedAt          time.Time `json:"created_at"`
@@ -82,6 +45,7 @@ type RequestFilter struct {
 	Model               string
 	Method              string
 	Backend             string
+	ClientIP            string
 	Search              string
 	StatusCode          int
 	TimeFrom            time.Time // 开始时间（含），零值表示不限
@@ -91,7 +55,9 @@ type RequestFilter struct {
 	WithTokens          bool
 	ChatCompletionsOnly bool
 }
-type responseMeta struct {
+
+// ResponseMeta 为从后端响应中解析出的元数据（token、模型、时延）。
+type ResponseMeta struct {
 	Model              string
 	PromptTokens       int64
 	CachedPromptTokens int64
@@ -99,32 +65,4 @@ type responseMeta struct {
 	TotalTokens        int64
 	PromptMs           float64
 	CompletionMs       float64
-}
-type limitedBuffer struct {
-	max int64
-	buf bytes.Buffer
-}
-
-func newLimitedBuffer(max int64) *limitedBuffer {
-	return &limitedBuffer{max: max}
-}
-
-func (lb *limitedBuffer) Write(p []byte) (int, error) {
-	if lb.max <= 0 {
-		return lb.buf.Write(p)
-	}
-	remaining := lb.max - int64(lb.buf.Len())
-	if remaining <= 0 {
-		return len(p), nil
-	}
-	if int64(len(p)) > remaining {
-		_, _ = lb.buf.Write(p[:remaining])
-		return len(p), nil
-	}
-	_, _ = lb.buf.Write(p)
-	return len(p), nil
-}
-
-func (lb *limitedBuffer) Bytes() []byte {
-	return lb.buf.Bytes()
 }
